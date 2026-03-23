@@ -46,11 +46,22 @@ class RenderConfig:
 
 
 @dataclass(frozen=True)
+class OscConfig:
+    host: str = "127.0.0.1"
+    port: int = 9000
+    vertical_axis: float = 1.0
+    backward_axis: float = -1.0
+    turn_axis: float = 1.0
+    no_pose_failsafe_s: float = 0.5
+
+
+@dataclass(frozen=True)
 class AppConfig:
     tick_hz: float = 45.0
-    startup_banner: str = "bikeheadvr Phase 3 dwell selection"
+    startup_banner: str = "bikeheadvr Phase 4 OSC locomotion"
     dwell: DwellConfig = field(default_factory=DwellConfig)
     render: RenderConfig = field(default_factory=RenderConfig)
+    osc: OscConfig = field(default_factory=OscConfig)
     buttons: tuple[ButtonConfig, ...] = field(default_factory=lambda: default_buttons())
 
 

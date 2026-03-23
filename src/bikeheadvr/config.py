@@ -56,12 +56,37 @@ class OscConfig:
 
 
 @dataclass(frozen=True)
+class CalibrationConfig:
+    countdown_s: float = 3.0
+    sample_window_s: float = 0.6
+
+
+@dataclass(frozen=True)
+class CalibrationMessageConfig:
+    key: str = "dev.bikeheadvr.overlay.calibration_message"
+    label: str = "Calibrate"
+    width_m: float = 0.65
+    placement: OverlayPlacement = field(
+        default_factory=lambda: OverlayPlacement(
+            x_m=0.0,
+            y_m=0.05,
+            z_m=-1.0,
+            yaw_deg=0.0,
+        )
+    )
+
+
+@dataclass(frozen=True)
 class AppConfig:
     tick_hz: float = 45.0
-    startup_banner: str = "bikeheadvr Phase 4 OSC locomotion"
+    startup_banner: str = "bikeheadvr Phase 5 calibration"
     dwell: DwellConfig = field(default_factory=DwellConfig)
     render: RenderConfig = field(default_factory=RenderConfig)
     osc: OscConfig = field(default_factory=OscConfig)
+    calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
+    calibration_message: CalibrationMessageConfig = field(
+        default_factory=CalibrationMessageConfig
+    )
     buttons: tuple[ButtonConfig, ...] = field(default_factory=lambda: default_buttons())
 
 

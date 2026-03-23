@@ -33,6 +33,12 @@ class GazeRay:
 
 
 @dataclass(frozen=True)
+class HmdPose:
+    position: tuple[float, float, float]
+    direction: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
 class OverlayIntersection:
     uv: tuple[float, float]
     distance: float
@@ -125,6 +131,28 @@ class SteamVROverlayRuntime:
         self._created_overlays[button.id] = overlay
         return overlay
 
+    def update_overlay_placement(
+        self, overlay: OverlayHandle, placement: OverlayPlacement
+    ) -> None:
+        if self._overlay_api is None:
+            raise RuntimeError("OpenVR overlay API is not initialized")
+        self._overlay_api.setOverlayTransformAbsolute(
+            overlay.value,
+            openvr.TrackingUniverseStanding,
+            make_hmd_matrix34(placement),
+        )
+
+    def update_overlay_placement_relative_to_hmd(
+        self, overlay: OverlayHandle, placement: OverlayPlacement
+    ) -> None:
+        if self._overlay_api is None:
+            raise RuntimeError("OpenVR overlay API is not initialized")
+        self._overlay_api.setOverlayTransformTrackedDeviceRelative(
+            overlay.value,
+            openvr.k_unTrackedDeviceIndex_Hmd,
+            make_hmd_matrix34(placement),
+        )
+
     def request_texture_upload(
         self, overlay: OverlayHandle, texture: OverlayTexture
     ) -> None:
@@ -155,7 +183,7 @@ class SteamVROverlayRuntime:
         else:
             self._overlay_api.hideOverlay(overlay.value)
 
-    def get_hmd_gaze_ray(self) -> GazeRay | None:
+    def get_hmd_pose(self) -> HmdPose | None:
         if self._system is None:
             raise RuntimeError("OpenVR system is not initialized")
 
@@ -172,7 +200,19 @@ class SteamVROverlayRuntime:
         matrix = hmd_pose.mDeviceToAbsoluteTracking
         source = (matrix.m[0][3], matrix.m[1][3], matrix.m[2][3])
         direction = _normalize((-matrix.m[0][2], -matrix.m[1][2], -matrix.m[2][2]))
-        return GazeRay(source=source, direction=direction)
+        return HmdPose(position=source, direction=direction)
+
+    def get_hmd_gaze_ray(self) -> GazeRay | None:
+        hmd_pose = self.get_hmd_pose()
+        if hmd_pose is None:
+            return None
+        return GazeRay(source=hmd_pose.position, direction=hmd_pose.direction)
+
+    def get_hmd_yaw_deg(self) -> float | None:
+        hmd_pose = self.get_hmd_pose()
+        if hmd_pose is None:
+            return None
+        return math.degrees(math.atan2(-hmd_pose.direction[0], -hmd_pose.direction[2]))
 
     def compute_overlay_intersection(
         self,

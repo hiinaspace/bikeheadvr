@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import signal
 import sys
 import time
 from contextlib import suppress
 from dataclasses import dataclass
 
-from .config import AppConfig, ButtonConfig
+from .calibration import CalibrationController
+from .config import AppConfig, ButtonConfig, OverlayPlacement
 from .interaction import ButtonVisualState, DwellTracker
 from .overlay_ui import (
     OverlayTexture,
@@ -17,6 +19,8 @@ from .overlay_ui import (
     quantize_visual,
 )
 from .vr_runtime import (
+    GazeRay,
+    HmdPose,
     OverlayHandle,
     OverlayIntersection,
     RuntimeInitError,
@@ -33,6 +37,10 @@ class SceneButton:
     overlay: OverlayHandle
     visual: ButtonVisualState = ButtonVisualState()
     texture_variant: TextureVariant | None = None
+    title_text: str | None = None
+    subtitle_text: str | None = None
+    rendered_title_text: str | None = None
+    rendered_subtitle_text: str | None = None
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -56,6 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     config = AppConfig()
     runtime = SteamVROverlayRuntime(tick_hz=config.tick_hz)
     osc = VRChatOscController(config.osc)
+    calibration = CalibrationController(config.calibration)
     dwell = DwellTracker([button.id for button in config.buttons], config.dwell)
     should_stop = False
     frames_remaining = (
@@ -64,9 +73,15 @@ def main(argv: list[str] | None = None) -> int:
         else max(1, int(round(args.duration * config.tick_hz)))
     )
     scene_buttons: dict[str, SceneButton] = {}
-    texture_cache: dict[tuple[str, TextureVariant], OverlayTexture] = {}
+    calibration_overlay: SceneButton | None = None
+    texture_cache: dict[
+        tuple[str, TextureVariant, str | None, str | None], OverlayTexture
+    ] = {}
     current_hover_id: str | None = None
     controls_visible = False
+    calibrated_center_x_m = 0.0
+    calibrated_center_z_m = 0.0
+    calibrated_yaw_deg = 0.0
     no_pose_started_at: float | None = None
     turn_hold_id: str | None = None
 
@@ -91,21 +106,61 @@ def main(argv: list[str] | None = None) -> int:
                 runtime, config, texture_cache, scene_button, ButtonVisualState()
             )
             runtime.set_visible(overlay, button.always_visible)
+
+        calibration_overlay_config = ButtonConfig(
+            id="calibration_message",
+            label=config.calibration_message.label,
+            key=config.calibration_message.key,
+            width_m=config.calibration_message.width_m,
+            placement=config.calibration_message.placement,
+            always_visible=False,
+        )
+        calibration_overlay = SceneButton(
+            config=calibration_overlay_config,
+            overlay=runtime.create_overlay(calibration_overlay_config),
+            visual=ButtonVisualState(hovered=True),
+            title_text="CALIBRATE",
+            subtitle_text="LOOK FORWARD",
+        )
+        _apply_visual(
+            runtime,
+            config,
+            texture_cache,
+            calibration_overlay,
+            calibration_overlay.visual,
+        )
+        runtime.update_overlay_placement_relative_to_hmd(
+            calibration_overlay.overlay,
+            config.calibration_message.placement,
+        )
+        runtime.set_visible(calibration_overlay.overlay, False)
+
+        _apply_calibrated_placements(
+            runtime,
+            scene_buttons,
+            calibrated_center_x_m,
+            calibrated_center_z_m,
+            calibrated_yaw_deg,
+        )
         _apply_visibility(runtime, scene_buttons, controls_visible)
 
-        LOGGER.info("Phase 4 scene visible. Dwell on toggle to show controls.")
+        LOGGER.info(
+            "Phase 5 scene visible. Dwell on toggle to calibrate and show controls."
+        )
 
         while not should_stop:
             runtime.pump_overlay_events()
-            gaze_ray = runtime.get_hmd_gaze_ray()
             now = time.monotonic()
-            if gaze_ray is None:
+            hmd_pose = runtime.get_hmd_pose()
+            gaze_ray = _to_gaze_ray(hmd_pose)
+            if hmd_pose is None:
                 if no_pose_started_at is None:
                     no_pose_started_at = now
                 elif now - no_pose_started_at >= config.osc.no_pose_failsafe_s:
                     osc.force_zero()
             else:
                 no_pose_started_at = None
+                _apply_toggle_placement(runtime, scene_buttons["toggle"], hmd_pose)
 
             best_hit: tuple[str, OverlayIntersection] | None = None
             if gaze_ray is not None:
@@ -126,6 +181,49 @@ def main(argv: list[str] | None = None) -> int:
             turn_hold_id = _apply_turn_hold(
                 osc, new_hover_id, controls_visible, turn_hold_id
             )
+
+            calibration_status = calibration.update(
+                now,
+                _yaw_from_pose(hmd_pose),
+                _position_xz_from_pose(hmd_pose),
+            )
+            if calibration_status.completed_pose is not None:
+                calibrated_center_x_m = calibration_status.completed_pose.x_m
+                calibrated_center_z_m = calibration_status.completed_pose.z_m
+                calibrated_yaw_deg = calibration_status.completed_pose.yaw_deg
+                controls_visible = True
+                LOGGER.info(
+                    "Calibration complete center=(%.2f, %.2f) yaw=%.1f deg",
+                    calibrated_center_x_m,
+                    calibrated_center_z_m,
+                    calibrated_yaw_deg,
+                )
+                _apply_calibrated_placements(
+                    runtime,
+                    scene_buttons,
+                    calibrated_center_x_m,
+                    calibrated_center_z_m,
+                    calibrated_yaw_deg,
+                )
+                _apply_visibility(runtime, scene_buttons, controls_visible)
+
+            if calibration_overlay is not None and (
+                calibration_overlay.title_text != calibration_status.title_text
+                or calibration_overlay.subtitle_text != calibration_status.subtitle_text
+            ):
+                calibration_overlay.title_text = calibration_status.title_text
+                calibration_overlay.subtitle_text = calibration_status.subtitle_text
+                _apply_visual(
+                    runtime,
+                    config,
+                    texture_cache,
+                    calibration_overlay,
+                    calibration_overlay.visual,
+                )
+            if calibration_overlay is not None:
+                runtime.set_visible(
+                    calibration_overlay.overlay, calibration_status.active
+                )
 
             for button_id, scene_button in scene_buttons.items():
                 visual = update.visuals[button_id]
@@ -152,7 +250,9 @@ def main(argv: list[str] | None = None) -> int:
                 LOGGER.info("Committed %s", update.committed_id)
                 controls_visible = _apply_commit(
                     update.committed_id,
+                    now,
                     osc,
+                    calibration,
                     controls_visible,
                 )
                 if update.committed_id in {"left", "right"}:
@@ -201,33 +301,55 @@ if __name__ == "__main__":
 def _apply_visual(
     runtime: SteamVROverlayRuntime,
     config: AppConfig,
-    texture_cache: dict[tuple[str, TextureVariant], OverlayTexture],
+    texture_cache: dict[
+        tuple[str, TextureVariant, str | None, str | None], OverlayTexture
+    ],
     scene_button: SceneButton,
     visual: ButtonVisualState,
 ) -> None:
     variant = quantize_visual(visual, config.render)
-    if variant == scene_button.texture_variant:
+    if (
+        variant == scene_button.texture_variant
+        and scene_button.title_text == scene_button.rendered_title_text
+        and scene_button.subtitle_text == scene_button.rendered_subtitle_text
+    ):
         return
-    cache_key = (scene_button.config.id, variant)
+    cache_key = (
+        scene_button.config.id,
+        variant,
+        scene_button.title_text,
+        scene_button.subtitle_text,
+    )
     texture = texture_cache.get(cache_key)
     if texture is None:
-        texture = build_button_texture(scene_button.config, variant)
+        texture = build_button_texture(
+            scene_button.config,
+            variant,
+            title_text=scene_button.title_text,
+            subtitle_text=scene_button.subtitle_text,
+        )
         texture_cache[cache_key] = texture
     runtime.request_texture_upload(scene_button.overlay, texture)
     scene_button.texture_variant = variant
+    scene_button.rendered_title_text = scene_button.title_text
+    scene_button.rendered_subtitle_text = scene_button.subtitle_text
 
 
 def _apply_commit(
     committed_id: str,
+    now: float,
     osc: VRChatOscController,
+    calibration: CalibrationController,
     controls_visible: bool,
 ) -> bool:
     if committed_id == "toggle":
-        new_visible = not controls_visible
-        if not new_visible:
+        if controls_visible:
             osc.force_zero()
-        LOGGER.info("Controls %s", "shown" if new_visible else "hidden")
-        return new_visible
+            LOGGER.info("Controls hidden")
+            return False
+        calibration.start(now)
+        LOGGER.info("Calibration started")
+        return False
     if committed_id == "forward":
         osc.set_forward()
     elif committed_id == "backward":
@@ -269,3 +391,81 @@ def _apply_turn_hold(
     if turn_hold_id is not None:
         osc.clear_turn()
     return None
+
+
+def _apply_calibrated_placements(
+    runtime: SteamVROverlayRuntime,
+    scene_buttons: dict[str, SceneButton],
+    calibrated_center_x_m: float,
+    calibrated_center_z_m: float,
+    calibrated_yaw_deg: float,
+) -> None:
+    for button_id, scene_button in scene_buttons.items():
+        if button_id == "toggle":
+            continue
+        runtime.update_overlay_placement(
+            scene_button.overlay,
+            _rotate_and_translate_placement(
+                scene_button.config.placement,
+                calibrated_center_x_m,
+                calibrated_center_z_m,
+                calibrated_yaw_deg,
+            ),
+        )
+
+
+def _apply_toggle_placement(
+    runtime: SteamVROverlayRuntime,
+    toggle_button: SceneButton,
+    hmd_pose: HmdPose,
+) -> None:
+    runtime.update_overlay_placement(
+        toggle_button.overlay,
+        OverlayPlacement(
+            x_m=hmd_pose.position[0],
+            y_m=toggle_button.config.placement.y_m,
+            z_m=hmd_pose.position[2],
+            yaw_deg=toggle_button.config.placement.yaw_deg,
+            pitch_deg=toggle_button.config.placement.pitch_deg,
+            roll_deg=toggle_button.config.placement.roll_deg,
+        ),
+    )
+
+
+def _rotate_and_translate_placement(
+    placement: OverlayPlacement,
+    calibrated_center_x_m: float,
+    calibrated_center_z_m: float,
+    calibrated_yaw_deg: float,
+) -> OverlayPlacement:
+    yaw_rad = math.radians(calibrated_yaw_deg)
+    cos_yaw = math.cos(yaw_rad)
+    sin_yaw = math.sin(yaw_rad)
+    rotated_x = placement.x_m * cos_yaw + placement.z_m * sin_yaw
+    rotated_z = -placement.x_m * sin_yaw + placement.z_m * cos_yaw
+    return OverlayPlacement(
+        x_m=calibrated_center_x_m + rotated_x,
+        y_m=placement.y_m,
+        z_m=calibrated_center_z_m + rotated_z,
+        yaw_deg=placement.yaw_deg + calibrated_yaw_deg,
+        pitch_deg=placement.pitch_deg,
+        roll_deg=placement.roll_deg,
+    )
+
+
+def _to_gaze_ray(hmd_pose: HmdPose | None) -> GazeRay | None:
+    if hmd_pose is None:
+        return None
+    return GazeRay(source=hmd_pose.position, direction=hmd_pose.direction)
+
+
+def _yaw_from_pose(hmd_pose: HmdPose | None) -> float | None:
+    if hmd_pose is None:
+        return None
+    return math.degrees(math.atan2(-hmd_pose.direction[0], -hmd_pose.direction[2]))
+
+
+def _position_xz_from_pose(hmd_pose: HmdPose | None) -> tuple[float, float] | None:
+    if hmd_pose is None:
+        return None
+    return (hmd_pose.position[0], hmd_pose.position[2])

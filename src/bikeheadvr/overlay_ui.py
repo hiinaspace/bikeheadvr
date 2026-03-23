@@ -39,7 +39,10 @@ def quantize_visual(visual: ButtonVisualState, render: RenderConfig) -> TextureV
 
 
 def build_button_texture(
-    button: ButtonConfig, variant: TextureVariant
+    button: ButtonConfig,
+    variant: TextureVariant,
+    title_text: str | None = None,
+    subtitle_text: str | None = None,
 ) -> OverlayTexture:
     image = Image.new(
         "RGBA", (button.texture.width_px, button.texture.height_px), (0, 0, 0, 0)
@@ -93,7 +96,7 @@ def build_button_texture(
 
     _draw_progress(draw, button, variant, accent)
 
-    title = button.label.upper()
+    title = title_text if title_text is not None else button.label.upper()
     title_bbox = draw.textbbox((0, 0), title, font=font)
     title_width = title_bbox[2] - title_bbox[0]
     draw.text(
@@ -106,15 +109,17 @@ def build_button_texture(
         fill=text,
     )
 
-    subtitle = "LOOK HERE"
-    if variant.committed:
-        subtitle = "COMMITTED"
-    elif variant.cooldown_bucket > 0:
-        subtitle = "COOLDOWN"
-    elif variant.armed:
-        subtitle = "DWELLING"
-    elif hovered:
-        subtitle = "HOVER"
+    subtitle = subtitle_text
+    if subtitle is None:
+        subtitle = "LOOK HERE"
+        if variant.committed:
+            subtitle = "COMMITTED"
+        elif variant.cooldown_bucket > 0:
+            subtitle = "COOLDOWN"
+        elif variant.armed:
+            subtitle = "DWELLING"
+        elif hovered:
+            subtitle = "HOVER"
     subtitle_bbox = draw.textbbox((0, 0), subtitle, font=font)
     subtitle_width = subtitle_bbox[2] - subtitle_bbox[0]
     draw.text(

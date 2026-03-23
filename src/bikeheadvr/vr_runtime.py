@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import math
 import os
-from ctypes import create_string_buffer
+import uuid
 from dataclasses import dataclass
 from time import sleep
 
@@ -11,6 +11,7 @@ import openvr
 from openvr.error_code import OpenVRError
 
 from .config import ButtonConfig, OverlayPlacement
+from .gpu_textures import OpenGLTextureManager
 from .overlay_ui import OverlayTexture
 
 LOGGER = logging.getLogger(__name__)
@@ -37,7 +38,9 @@ class OverlayIntersection:
     distance: float
 
 
-def _rotation_matrix_xyz(yaw_deg: float, pitch_deg: float, roll_deg: float) -> list[list[float]]:
+def _rotation_matrix_xyz(
+    yaw_deg: float, pitch_deg: float, roll_deg: float
+) -> list[list[float]]:
     yaw = math.radians(yaw_deg)
     pitch = math.radians(pitch_deg)
     roll = math.radians(roll_deg)
@@ -54,7 +57,10 @@ def _rotation_matrix_xyz(yaw_deg: float, pitch_deg: float, roll_deg: float) -> l
 
 def _matmul(a: list[list[float]], b: list[list[float]]) -> list[list[float]]:
     return [
-        [sum(row[k] * b[k][col_idx] for k in range(len(b))) for col_idx in range(len(b[0]))]
+        [
+            sum(row[k] * b[k][col_idx] for k in range(len(b)))
+            for col_idx in range(len(b[0]))
+        ]
         for row in a
     ]
 
@@ -80,8 +86,10 @@ class SteamVROverlayRuntime:
         self.tick_hz = tick_hz
         self._system: openvr.IVRSystem | None = None
         self._overlay_api: openvr.IVROverlay | None = None
+        self._texture_manager: OpenGLTextureManager | None = None
         self._created_overlays: dict[str, OverlayHandle] = {}
         self._initialized = False
+        self._session_key_suffix = uuid.uuid4().hex[:8]
 
     def initialize(self) -> None:
         try:
@@ -89,6 +97,7 @@ class SteamVROverlayRuntime:
             LOGGER.info("OpenVR runtime path: %s", runtime_path)
             self._system = openvr.init(openvr.VRApplication_Overlay)
             self._overlay_api = openvr.VROverlay()
+            self._texture_manager = OpenGLTextureManager()
             self._initialized = True
         except OpenVRError as exc:
             raise RuntimeInitError(self._format_init_error(exc)) from exc
@@ -97,11 +106,16 @@ class SteamVROverlayRuntime:
         if self._overlay_api is None:
             raise RuntimeError("OpenVR overlay API is not initialized")
 
-        handle = self._overlay_api.createOverlay(button.key, button.label)
+        session_key = f"{button.key}.{self._session_key_suffix}"
+        handle = self._overlay_api.createOverlay(session_key, button.label)
         self._overlay_api.setOverlayWidthInMeters(handle, button.width_m)
         self._overlay_api.setOverlayAlpha(handle, button.alpha)
-        self._overlay_api.setOverlayInputMethod(handle, openvr.VROverlayInputMethod_None)
-        self._overlay_api.setOverlayFlag(handle, openvr.VROverlayFlags_NoDashboardTab, True)
+        self._overlay_api.setOverlayInputMethod(
+            handle, openvr.VROverlayInputMethod_None
+        )
+        self._overlay_api.setOverlayFlag(
+            handle, openvr.VROverlayFlags_NoDashboardTab, True
+        )
         self._overlay_api.setOverlayTransformAbsolute(
             handle,
             openvr.TrackingUniverseStanding,
@@ -111,12 +125,27 @@ class SteamVROverlayRuntime:
         self._created_overlays[button.id] = overlay
         return overlay
 
-    def upload_texture(self, overlay: OverlayHandle, texture: OverlayTexture) -> None:
-        if self._overlay_api is None:
+    def request_texture_upload(
+        self, overlay: OverlayHandle, texture: OverlayTexture
+    ) -> None:
+        if self._overlay_api is None or self._texture_manager is None:
             raise RuntimeError("OpenVR overlay API is not initialized")
 
-        buffer = create_string_buffer(texture.rgba_bytes, len(texture.rgba_bytes))
-        self._overlay_api.setOverlayRaw(overlay.value, buffer, texture.width_px, texture.height_px, 4)
+        if overlay.value not in {
+            created.value for created in self._created_overlays.values()
+        }:
+            raise RuntimeError("Overlay handle is not tracked by this runtime")
+
+        try:
+            vr_texture = self._texture_manager.get_vr_texture(overlay.value)
+        except KeyError:
+            self._texture_manager.create_overlay_texture(overlay.value, texture)
+            vr_texture = self._texture_manager.get_vr_texture(overlay.value)
+            self._apply_texture_bounds(overlay)
+            self._overlay_api.setOverlayTexture(overlay.value, vr_texture)
+        else:
+            self._texture_manager.update_overlay_texture(overlay.value, texture)
+            self._overlay_api.setOverlayTexture(overlay.value, vr_texture)
 
     def set_visible(self, overlay: OverlayHandle, visible: bool) -> None:
         if self._overlay_api is None:
@@ -160,7 +189,9 @@ class SteamVROverlayRuntime:
         for idx, value in enumerate(gaze_ray.direction):
             params.vDirection.v[idx] = value
 
-        hit, results = self._overlay_api.computeOverlayIntersection(overlay.value, params)
+        hit, results = self._overlay_api.computeOverlayIntersection(
+            overlay.value, params
+        )
         if not hit:
             return None
         return OverlayIntersection(
@@ -172,6 +203,9 @@ class SteamVROverlayRuntime:
         timeout_s = 1.0 / self.tick_hz
         sleep(timeout_s)
 
+    def pump_overlay_events(self) -> None:
+        return
+
     def shutdown(self) -> None:
         if self._overlay_api is not None:
             for overlay in self._created_overlays.values():
@@ -182,8 +216,13 @@ class SteamVROverlayRuntime:
                 try:
                     self._overlay_api.destroyOverlay(overlay.value)
                 except OpenVRError:
-                    LOGGER.debug("Overlay destroy failed during shutdown", exc_info=True)
+                    LOGGER.debug(
+                        "Overlay destroy failed during shutdown", exc_info=True
+                    )
             self._created_overlays.clear()
+        if self._texture_manager is not None:
+            self._texture_manager.destroy()
+            self._texture_manager = None
 
         if self._initialized:
             openvr.shutdown()
@@ -194,13 +233,26 @@ class SteamVROverlayRuntime:
     def _format_init_error(self, exc: OpenVRError) -> str:
         text = str(exc)
         if "Init_NoLogPath" in text:
-            steam_log_dir = os.path.join(os.environ.get("PROGRAMFILES(X86)", ""), "Steam", "logs")
+            steam_log_dir = os.path.join(
+                os.environ.get("PROGRAMFILES(X86)", ""), "Steam", "logs"
+            )
             return (
                 "OpenVR failed to initialize because SteamVR could not open its log path. "
                 f"Expected Steam log directory: {steam_log_dir}. "
                 "This can happen inside the sandbox even when SteamVR is installed."
             )
         return f"OpenVR initialization failed: {text}"
+
+    def _apply_texture_bounds(self, overlay: OverlayHandle) -> None:
+        if self._overlay_api is None:
+            raise RuntimeError("OpenVR overlay API is not initialized")
+
+        bounds = openvr.VRTextureBounds_t()
+        bounds.uMin = 0.0
+        bounds.uMax = 1.0
+        bounds.vMin = 1.0
+        bounds.vMax = 0.0
+        self._overlay_api.setOverlayTextureBounds(overlay.value, bounds)
 
 
 def _normalize(vector: tuple[float, float, float]) -> tuple[float, float, float]:

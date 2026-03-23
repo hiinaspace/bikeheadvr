@@ -4,11 +4,13 @@ import argparse
 import logging
 import signal
 import sys
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 
 from .config import AppConfig, ButtonConfig
-from .overlay_ui import build_button_texture
+from .interaction import ButtonVisualState, DwellTracker
+from .overlay_ui import TextureVariant, build_button_texture, quantize_visual
 from .vr_runtime import OverlayIntersection, OverlayHandle, RuntimeInitError, SteamVROverlayRuntime
 
 LOGGER = logging.getLogger(__name__)
@@ -18,11 +20,12 @@ LOGGER = logging.getLogger(__name__)
 class SceneButton:
     config: ButtonConfig
     overlay: OverlayHandle
-    hovered: bool = False
+    visual: ButtonVisualState = ButtonVisualState()
+    texture_variant: TextureVariant | None = None
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="bikeheadvr Phase 2 gaze hit testing")
+    parser = argparse.ArgumentParser(description="bikeheadvr Phase 3 dwell selection")
     parser.add_argument("--duration", type=float, default=0.0)
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args(argv)
@@ -39,9 +42,11 @@ def main(argv: list[str] | None = None) -> int:
 
     config = AppConfig()
     runtime = SteamVROverlayRuntime(tick_hz=config.tick_hz)
+    dwell = DwellTracker([button.id for button in config.buttons], config.dwell)
     should_stop = False
     frames_remaining = None if args.duration <= 0 else max(1, int(round(args.duration * config.tick_hz)))
     scene_buttons: dict[str, SceneButton] = {}
+    texture_cache: dict[tuple[str, TextureVariant], object] = {}
     current_hover_id: str | None = None
 
     def request_stop(signum: int, _frame: object) -> None:
@@ -59,13 +64,15 @@ def main(argv: list[str] | None = None) -> int:
 
         for button in config.buttons:
             overlay = runtime.create_overlay(button)
-            runtime.upload_texture(overlay, build_button_texture(button, hovered=False))
+            scene_button = SceneButton(config=button, overlay=overlay)
+            scene_buttons[button.id] = scene_button
+            _apply_visual(runtime, config, texture_cache, scene_button, ButtonVisualState())
             runtime.set_visible(overlay, button.always_visible)
-            scene_buttons[button.id] = SceneButton(config=button, overlay=overlay)
 
-        LOGGER.info("Phase 2 scene visible. Move your head to hover targets.")
+        LOGGER.info("Phase 3 scene visible. Hover and dwell on targets.")
 
         while not should_stop:
+            runtime.pump_overlay_events()
             gaze_ray = runtime.get_hmd_gaze_ray()
             best_hit: tuple[str, OverlayIntersection] | None = None
             if gaze_ray is not None:
@@ -76,17 +83,18 @@ def main(argv: list[str] | None = None) -> int:
                     if best_hit is None or hit.distance < best_hit[1].distance:
                         best_hit = (button_id, hit)
 
-            new_hover_id = best_hit[0] if best_hit is not None else None
+            now = time.monotonic()
+            update = dwell.update(now, best_hit[0] if best_hit is not None else None)
+            new_hover_id = update.hover_id
+
+            for button_id, scene_button in scene_buttons.items():
+                visual = update.visuals[button_id]
+                if visual == scene_button.visual:
+                    continue
+                scene_button.visual = visual
+                _apply_visual(runtime, config, texture_cache, scene_button, visual)
+
             if new_hover_id != current_hover_id:
-                for button_id, scene_button in scene_buttons.items():
-                    hovered = button_id == new_hover_id
-                    if hovered == scene_button.hovered:
-                        continue
-                    scene_button.hovered = hovered
-                    runtime.upload_texture(
-                        scene_button.overlay,
-                        build_button_texture(scene_button.config, hovered=hovered),
-                    )
                 current_hover_id = new_hover_id
                 if best_hit is None:
                     LOGGER.info("Hover cleared")
@@ -99,6 +107,9 @@ def main(argv: list[str] | None = None) -> int:
                         uv[1],
                         best_hit[1].distance,
                     )
+
+            if update.committed_id is not None:
+                LOGGER.info("Committed %s", update.committed_id)
 
             runtime.wait_frame()
             if frames_remaining is not None:
@@ -119,3 +130,22 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
+
+
+def _apply_visual(
+    runtime: SteamVROverlayRuntime,
+    config: AppConfig,
+    texture_cache: dict[tuple[str, TextureVariant], object],
+    scene_button: SceneButton,
+    visual: ButtonVisualState,
+) -> None:
+    variant = quantize_visual(visual, config.render)
+    if variant == scene_button.texture_variant:
+        return
+    cache_key = (scene_button.config.id, variant)
+    texture = texture_cache.get(cache_key)
+    if texture is None:
+        texture = build_button_texture(scene_button.config, variant)
+        texture_cache[cache_key] = texture
+    runtime.request_texture_upload(scene_button.overlay, texture)
+    scene_button.texture_variant = variant

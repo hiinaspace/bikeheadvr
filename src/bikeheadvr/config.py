@@ -33,9 +33,24 @@ class ButtonConfig:
 
 
 @dataclass(frozen=True)
+class DwellConfig:
+    onset_delay_s: float = 0.2
+    commit_duration_s: float = 0.6
+    cooldown_s: float = 0.5
+
+
+@dataclass(frozen=True)
+class RenderConfig:
+    dwell_steps: int = 12
+    cooldown_steps: int = 10
+
+
+@dataclass(frozen=True)
 class AppConfig:
     tick_hz: float = 45.0
-    startup_banner: str = "bikeheadvr Phase 2 gaze hit testing"
+    startup_banner: str = "bikeheadvr Phase 3 dwell selection"
+    dwell: DwellConfig = field(default_factory=DwellConfig)
+    render: RenderConfig = field(default_factory=RenderConfig)
     buttons: tuple[ButtonConfig, ...] = field(default_factory=lambda: default_buttons())
 
 

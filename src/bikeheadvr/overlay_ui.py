@@ -38,8 +38,12 @@ def quantize_visual(visual: ButtonVisualState, render: RenderConfig) -> TextureV
     )
 
 
-def build_button_texture(button: ButtonConfig, variant: TextureVariant) -> OverlayTexture:
-    image = Image.new("RGBA", (button.texture.width_px, button.texture.height_px), (0, 0, 0, 0))
+def build_button_texture(
+    button: ButtonConfig, variant: TextureVariant
+) -> OverlayTexture:
+    image = Image.new(
+        "RGBA", (button.texture.width_px, button.texture.height_px), (0, 0, 0, 0)
+    )
     draw = ImageDraw.Draw(image)
     font = ImageFont.load_default()
 
@@ -53,12 +57,22 @@ def build_button_texture(button: ButtonConfig, variant: TextureVariant) -> Overl
         fill = (19, 61, 35, 235)
     text = (255, 243, 218, 255) if hovered else (238, 245, 248, 255)
 
-    bounds = (frame, frame, button.texture.width_px - frame, button.texture.height_px - frame)
+    bounds = (
+        frame,
+        frame,
+        button.texture.width_px - frame,
+        button.texture.height_px - frame,
+    )
     if button.shape == "circle":
         draw.ellipse(bounds, fill=fill, outline=accent, width=8)
         inner = 64
         draw.ellipse(
-            (inner, inner, button.texture.width_px - inner, button.texture.height_px - inner),
+            (
+                inner,
+                inner,
+                button.texture.width_px - inner,
+                button.texture.height_px - inner,
+            ),
             outline=(255, 255, 255, 72),
             width=2,
         )
@@ -66,7 +80,12 @@ def build_button_texture(button: ButtonConfig, variant: TextureVariant) -> Overl
         draw.rounded_rectangle(bounds, radius=42, fill=fill, outline=accent, width=8)
         inset = 46
         draw.rounded_rectangle(
-            (inset, inset, button.texture.width_px - inset, button.texture.height_px - inset),
+            (
+                inset,
+                inset,
+                button.texture.width_px - inset,
+                button.texture.height_px - inset,
+            ),
             radius=28,
             outline=(255, 255, 255, 64),
             width=2,
@@ -78,7 +97,10 @@ def build_button_texture(button: ButtonConfig, variant: TextureVariant) -> Overl
     title_bbox = draw.textbbox((0, 0), title, font=font)
     title_width = title_bbox[2] - title_bbox[0]
     draw.text(
-        ((button.texture.width_px - title_width) / 2, button.texture.height_px / 2 - 16),
+        (
+            (button.texture.width_px - title_width) / 2,
+            button.texture.height_px / 2 - 16,
+        ),
         title,
         font=font,
         fill=text,
@@ -96,7 +118,10 @@ def build_button_texture(button: ButtonConfig, variant: TextureVariant) -> Overl
     subtitle_bbox = draw.textbbox((0, 0), subtitle, font=font)
     subtitle_width = subtitle_bbox[2] - subtitle_bbox[0]
     draw.text(
-        ((button.texture.width_px - subtitle_width) / 2, button.texture.height_px / 2 + 20),
+        (
+            (button.texture.width_px - subtitle_width) / 2,
+            button.texture.height_px / 2 + 20,
+        ),
         subtitle,
         font=font,
         fill=accent,
@@ -119,14 +144,21 @@ def _draw_progress(
         return
 
     pad = 28
-    ring_bounds = (pad, pad, button.texture.width_px - pad, button.texture.height_px - pad)
+    ring_bounds = (
+        pad,
+        pad,
+        button.texture.width_px - pad,
+        button.texture.height_px - pad,
+    )
     base_color = (255, 255, 255, 42)
     draw.arc(ring_bounds, start=0, end=359, fill=base_color, width=10)
 
     if variant.cooldown_bucket > 0:
         progress = variant.cooldown_bucket / variant.cooldown_steps
         end_angle = -90 + int((1.0 - progress) * 360)
-        draw.arc(ring_bounds, start=-90, end=end_angle, fill=(181, 181, 181, 255), width=10)
+        draw.arc(
+            ring_bounds, start=-90, end=end_angle, fill=(181, 181, 181, 255), width=10
+        )
         return
 
     if variant.armed or variant.committed:

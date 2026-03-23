@@ -259,4 +259,8 @@ def _normalize(vector: tuple[float, float, float]) -> tuple[float, float, float]
     magnitude = math.sqrt(sum(component * component for component in vector))
     if magnitude == 0.0:
         return (0.0, 0.0, -1.0)
-    return tuple(component / magnitude for component in vector)
+    return (
+        vector[0] / magnitude,
+        vector[1] / magnitude,
+        vector[2] / magnitude,
+    )

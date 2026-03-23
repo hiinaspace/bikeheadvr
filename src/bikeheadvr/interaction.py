@@ -55,12 +55,17 @@ class DwellTracker:
                 armed_elapsed = now - state.hover_started_at
                 if armed_elapsed >= self._config.onset_delay_s:
                     commit_elapsed = armed_elapsed - self._config.onset_delay_s
-                    if commit_elapsed >= self._config.commit_duration_s and state.committed_id != state.hover_id:
+                    if (
+                        commit_elapsed >= self._config.commit_duration_s
+                        and state.committed_id != state.hover_id
+                    ):
                         committed_id = state.hover_id
                         state.committed_id = state.hover_id
                         state.commit_started_at = now
                         state.retrigger_blocked_id = state.hover_id
-                        state.cooldown_until[state.hover_id] = now + self._config.cooldown_s
+                        state.cooldown_until[state.hover_id] = (
+                            now + self._config.cooldown_s
+                        )
             else:
                 state.hover_started_at = now
                 state.commit_started_at = None
@@ -105,7 +110,9 @@ class DwellTracker:
                 if elapsed >= self._config.onset_delay_s:
                     armed = True
                     dwell_elapsed = elapsed - self._config.onset_delay_s
-                    dwell_progress = min(1.0, dwell_elapsed / self._config.commit_duration_s)
+                    dwell_progress = min(
+                        1.0, dwell_elapsed / self._config.commit_duration_s
+                    )
 
             visuals[button_id] = ButtonVisualState(
                 hovered=hovered,

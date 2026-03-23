@@ -10,8 +10,18 @@ from dataclasses import dataclass
 
 from .config import AppConfig, ButtonConfig
 from .interaction import ButtonVisualState, DwellTracker
-from .overlay_ui import TextureVariant, build_button_texture, quantize_visual
-from .vr_runtime import OverlayIntersection, OverlayHandle, RuntimeInitError, SteamVROverlayRuntime
+from .overlay_ui import (
+    OverlayTexture,
+    TextureVariant,
+    build_button_texture,
+    quantize_visual,
+)
+from .vr_runtime import (
+    OverlayHandle,
+    OverlayIntersection,
+    RuntimeInitError,
+    SteamVROverlayRuntime,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -33,7 +43,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def configure_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -44,9 +56,13 @@ def main(argv: list[str] | None = None) -> int:
     runtime = SteamVROverlayRuntime(tick_hz=config.tick_hz)
     dwell = DwellTracker([button.id for button in config.buttons], config.dwell)
     should_stop = False
-    frames_remaining = None if args.duration <= 0 else max(1, int(round(args.duration * config.tick_hz)))
+    frames_remaining = (
+        None
+        if args.duration <= 0
+        else max(1, int(round(args.duration * config.tick_hz)))
+    )
     scene_buttons: dict[str, SceneButton] = {}
-    texture_cache: dict[tuple[str, TextureVariant], object] = {}
+    texture_cache: dict[tuple[str, TextureVariant], OverlayTexture] = {}
     current_hover_id: str | None = None
 
     def request_stop(signum: int, _frame: object) -> None:
@@ -66,7 +82,9 @@ def main(argv: list[str] | None = None) -> int:
             overlay = runtime.create_overlay(button)
             scene_button = SceneButton(config=button, overlay=overlay)
             scene_buttons[button.id] = scene_button
-            _apply_visual(runtime, config, texture_cache, scene_button, ButtonVisualState())
+            _apply_visual(
+                runtime, config, texture_cache, scene_button, ButtonVisualState()
+            )
             runtime.set_visible(overlay, button.always_visible)
 
         LOGGER.info("Phase 3 scene visible. Hover and dwell on targets.")
@@ -77,7 +95,9 @@ def main(argv: list[str] | None = None) -> int:
             best_hit: tuple[str, OverlayIntersection] | None = None
             if gaze_ray is not None:
                 for button_id, scene_button in scene_buttons.items():
-                    hit = runtime.compute_overlay_intersection(scene_button.overlay, gaze_ray)
+                    hit = runtime.compute_overlay_intersection(
+                        scene_button.overlay, gaze_ray
+                    )
                     if hit is None:
                         continue
                     if best_hit is None or hit.distance < best_hit[1].distance:
@@ -135,7 +155,7 @@ if __name__ == "__main__":
 def _apply_visual(
     runtime: SteamVROverlayRuntime,
     config: AppConfig,
-    texture_cache: dict[tuple[str, TextureVariant], object],
+    texture_cache: dict[tuple[str, TextureVariant], OverlayTexture],
     scene_button: SceneButton,
     visual: ButtonVisualState,
 ) -> None:

@@ -12,6 +12,7 @@ LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class MovementIntent:
+    horizontal: float = 0.0
     vertical: float = 0.0
     look_left: int = 0
     look_right: int = 0
@@ -28,28 +29,35 @@ class VRChatOscController:
     def intended(self) -> MovementIntent:
         return self._intended
 
-    def set_forward(self) -> None:
+    def set_motion_axes(self, horizontal: float, vertical: float) -> None:
         next_intent = MovementIntent(
-            vertical=self._config.vertical_axis,
+            horizontal=float(horizontal),
+            vertical=float(vertical),
             look_left=self._intended.look_left,
             look_right=self._intended.look_right,
         )
         if next_intent != self._intended:
             self._intended = next_intent
-            LOGGER.info("Intent forward vertical=%.2f", self._intended.vertical)
+            LOGGER.info(
+                "Intent motion horizontal=%.2f vertical=%.2f",
+                self._intended.horizontal,
+                self._intended.vertical,
+            )
 
-    def set_backward(self) -> None:
+    def clear_motion(self) -> None:
         next_intent = MovementIntent(
-            vertical=self._config.backward_axis,
+            horizontal=0.0,
+            vertical=0.0,
             look_left=self._intended.look_left,
             look_right=self._intended.look_right,
         )
         if next_intent != self._intended:
             self._intended = next_intent
-            LOGGER.info("Intent backward vertical=%.2f", self._intended.vertical)
+            LOGGER.info("Intent motion cleared")
 
     def press_turn_left(self) -> None:
         next_intent = MovementIntent(
+            horizontal=self._intended.horizontal,
             vertical=self._intended.vertical,
             look_left=1,
             look_right=0,
@@ -60,6 +68,7 @@ class VRChatOscController:
 
     def press_turn_right(self) -> None:
         next_intent = MovementIntent(
+            horizontal=self._intended.horizontal,
             vertical=self._intended.vertical,
             look_left=0,
             look_right=1,
@@ -70,6 +79,7 @@ class VRChatOscController:
 
     def clear_turn(self) -> None:
         next_intent = MovementIntent(
+            horizontal=self._intended.horizontal,
             vertical=self._intended.vertical,
             look_left=0,
             look_right=0,
@@ -94,6 +104,8 @@ class VRChatOscController:
         self._send_button("/input/ComfortRight", 0)
 
     def sync(self) -> None:
+        if self._intended.horizontal != self._emitted.horizontal:
+            self._send_axis("/input/Horizontal", self._intended.horizontal)
         if self._intended.vertical != self._emitted.vertical:
             self._send_axis("/input/Vertical", self._intended.vertical)
         if self._intended.look_left != self._emitted.look_left:
@@ -105,28 +117,40 @@ class VRChatOscController:
         self._intended = MovementIntent()
         if self._emitted != MovementIntent():
             LOGGER.info("Failsafe zero")
+        self._send_axis("/input/Horizontal", 0.0)
         self._send_axis("/input/Vertical", 0.0)
         self._send_button("/input/LookLeft", 0)
         self._send_button("/input/LookRight", 0)
 
     def _send_axis(self, address: str, value: float) -> None:
         self._client.send_message(address, float(value))
-        self._emitted = MovementIntent(
-            vertical=float(value),
-            look_left=self._emitted.look_left,
-            look_right=self._emitted.look_right,
-        )
+        if address == "/input/Horizontal":
+            self._emitted = MovementIntent(
+                horizontal=float(value),
+                vertical=self._emitted.vertical,
+                look_left=self._emitted.look_left,
+                look_right=self._emitted.look_right,
+            )
+        elif address == "/input/Vertical":
+            self._emitted = MovementIntent(
+                horizontal=self._emitted.horizontal,
+                vertical=float(value),
+                look_left=self._emitted.look_left,
+                look_right=self._emitted.look_right,
+            )
 
     def _send_button(self, address: str, value: int) -> None:
         self._client.send_message(address, int(value))
         if address == "/input/LookLeft":
             self._emitted = MovementIntent(
+                horizontal=self._emitted.horizontal,
                 vertical=self._emitted.vertical,
                 look_left=int(value),
                 look_right=self._emitted.look_right,
             )
         elif address == "/input/LookRight":
             self._emitted = MovementIntent(
+                horizontal=self._emitted.horizontal,
                 vertical=self._emitted.vertical,
                 look_left=self._emitted.look_left,
                 look_right=int(value),

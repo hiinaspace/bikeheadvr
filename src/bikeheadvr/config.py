@@ -27,7 +27,7 @@ class ButtonConfig:
     width_m: float
     placement: OverlayPlacement
     texture: OverlayTextureConfig = field(default_factory=OverlayTextureConfig)
-    alpha: float = 1.0
+    alpha: float = 0.5
     shape: str = "roundrect"
     always_visible: bool = True
 

@@ -82,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     calibrated_center_x_m = 0.0
     calibrated_center_z_m = 0.0
     calibrated_yaw_deg = 0.0
+    latched_drive_id: str | None = None
     no_pose_started_at: float | None = None
     turn_hold_id: str | None = None
 
@@ -181,6 +182,14 @@ def main(argv: list[str] | None = None) -> int:
             turn_hold_id = _apply_turn_hold(
                 osc, new_hover_id, controls_visible, turn_hold_id
             )
+            _apply_drive_compensation(
+                osc,
+                latched_drive_id,
+                controls_visible,
+                hmd_pose,
+                calibrated_yaw_deg,
+                config,
+            )
 
             calibration_status = calibration.update(
                 now,
@@ -248,12 +257,13 @@ def main(argv: list[str] | None = None) -> int:
 
             if update.committed_id is not None:
                 LOGGER.info("Committed %s", update.committed_id)
-                controls_visible = _apply_commit(
+                controls_visible, latched_drive_id = _apply_commit(
                     update.committed_id,
                     now,
                     osc,
                     calibration,
                     controls_visible,
+                    latched_drive_id,
                 )
                 if update.committed_id in {"left", "right"}:
                     if update.committed_id == "left":
@@ -272,6 +282,14 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 elif update.committed_id in {"stop", "toggle"}:
                     turn_hold_id = _apply_turn_hold(osc, None, controls_visible, None)
+                _apply_drive_compensation(
+                    osc,
+                    latched_drive_id,
+                    controls_visible,
+                    hmd_pose,
+                    calibrated_yaw_deg,
+                    config,
+                )
                 _apply_visibility(runtime, scene_buttons, controls_visible)
 
             osc.sync()
@@ -341,22 +359,25 @@ def _apply_commit(
     osc: VRChatOscController,
     calibration: CalibrationController,
     controls_visible: bool,
-) -> bool:
+    latched_drive_id: str | None,
+) -> tuple[bool, str | None]:
     if committed_id == "toggle":
         if controls_visible:
             osc.force_zero()
             LOGGER.info("Controls hidden")
-            return False
+            return False, None
         calibration.start(now)
+        osc.clear_motion()
         LOGGER.info("Calibration started")
-        return False
+        return False, None
     if committed_id == "forward":
-        osc.set_forward()
+        return controls_visible, "forward"
     elif committed_id == "backward":
-        osc.set_backward()
+        return controls_visible, "backward"
     elif committed_id == "stop":
         osc.stop_all()
-    return controls_visible
+        return controls_visible, None
+    return controls_visible, latched_drive_id
 
 
 def _apply_visibility(
@@ -391,6 +412,31 @@ def _apply_turn_hold(
     if turn_hold_id is not None:
         osc.clear_turn()
     return None
+
+
+def _apply_drive_compensation(
+    osc: VRChatOscController,
+    latched_drive_id: str | None,
+    controls_visible: bool,
+    hmd_pose: HmdPose | None,
+    calibrated_yaw_deg: float,
+    config: AppConfig,
+) -> None:
+    if not controls_visible or latched_drive_id is None or hmd_pose is None:
+        osc.clear_motion()
+        return
+
+    drive_scalar = 0.0
+    if latched_drive_id == "forward":
+        drive_scalar = config.osc.vertical_axis
+    elif latched_drive_id == "backward":
+        drive_scalar = config.osc.backward_axis
+
+    yaw_delta_deg = _yaw_from_direction(hmd_pose.direction) - calibrated_yaw_deg
+    yaw_delta_rad = math.radians(yaw_delta_deg)
+    horizontal = drive_scalar * math.sin(yaw_delta_rad)
+    vertical = drive_scalar * math.cos(yaw_delta_rad)
+    osc.set_motion_axes(horizontal, vertical)
 
 
 def _apply_calibrated_placements(
@@ -462,10 +508,14 @@ def _to_gaze_ray(hmd_pose: HmdPose | None) -> GazeRay | None:
 def _yaw_from_pose(hmd_pose: HmdPose | None) -> float | None:
     if hmd_pose is None:
         return None
-    return math.degrees(math.atan2(-hmd_pose.direction[0], -hmd_pose.direction[2]))
+    return _yaw_from_direction(hmd_pose.direction)
 
 
 def _position_xz_from_pose(hmd_pose: HmdPose | None) -> tuple[float, float] | None:
     if hmd_pose is None:
         return None
     return (hmd_pose.position[0], hmd_pose.position[2])
+
+
+def _yaw_from_direction(direction: tuple[float, float, float]) -> float:
+    return math.degrees(math.atan2(-direction[0], -direction[2]))

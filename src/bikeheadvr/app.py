@@ -83,6 +83,9 @@ def main(argv: list[str] | None = None) -> int:
     calibrated_center_z_m = 0.0
     calibrated_yaw_deg = 0.0
     latched_drive_id: str | None = None
+    drive_adjust_id: str | None = None
+    drive_magnitude = 0.0
+    last_frame_at: float | None = None
     no_pose_started_at: float | None = None
 
     def request_stop(signum: int, _frame: object) -> None:
@@ -151,6 +154,8 @@ def main(argv: list[str] | None = None) -> int:
         while not should_stop:
             runtime.pump_overlay_events()
             now = time.monotonic()
+            delta_s = 0.0 if last_frame_at is None else max(0.0, now - last_frame_at)
+            last_frame_at = now
             hmd_pose = runtime.get_hmd_pose()
             gaze_ray = _to_gaze_ray(hmd_pose)
             if hmd_pose is None:
@@ -177,24 +182,6 @@ def main(argv: list[str] | None = None) -> int:
 
             update = dwell.update(now, best_hit[0] if best_hit is not None else None)
             new_hover_id = update.hover_id
-
-            _apply_lean_turn(
-                osc,
-                controls_visible,
-                hmd_pose,
-                calibrated_center_x_m,
-                calibrated_center_z_m,
-                calibrated_yaw_deg,
-                config,
-            )
-            _apply_drive_compensation(
-                osc,
-                latched_drive_id,
-                controls_visible,
-                hmd_pose,
-                calibrated_yaw_deg,
-                config,
-            )
 
             calibration_status = calibration.update(
                 now,
@@ -262,32 +249,51 @@ def main(argv: list[str] | None = None) -> int:
 
             if update.committed_id is not None:
                 LOGGER.info("Committed %s", update.committed_id)
-                controls_visible, latched_drive_id = _apply_commit(
+                (
+                    controls_visible,
+                    latched_drive_id,
+                    drive_adjust_id,
+                    drive_magnitude,
+                ) = _apply_commit(
                     update.committed_id,
                     now,
                     osc,
                     calibration,
                     controls_visible,
                     latched_drive_id,
-                )
-                _apply_lean_turn(
-                    osc,
-                    controls_visible,
-                    hmd_pose,
-                    calibrated_center_x_m,
-                    calibrated_center_z_m,
-                    calibrated_yaw_deg,
-                    config,
-                )
-                _apply_drive_compensation(
-                    osc,
-                    latched_drive_id,
-                    controls_visible,
-                    hmd_pose,
-                    calibrated_yaw_deg,
-                    config,
+                    drive_adjust_id,
+                    drive_magnitude,
                 )
                 _apply_visibility(runtime, scene_buttons, controls_visible)
+
+            latched_drive_id, drive_adjust_id, drive_magnitude = (
+                _apply_drive_adjustment(
+                    latched_drive_id,
+                    drive_adjust_id,
+                    drive_magnitude,
+                    new_hover_id,
+                    delta_s,
+                    config,
+                )
+            )
+            _apply_lean_turn(
+                osc,
+                controls_visible,
+                hmd_pose,
+                calibrated_center_x_m,
+                calibrated_center_z_m,
+                calibrated_yaw_deg,
+                config,
+            )
+            _apply_drive_compensation(
+                osc,
+                latched_drive_id,
+                drive_magnitude,
+                controls_visible,
+                hmd_pose,
+                calibrated_yaw_deg,
+                config,
+            )
 
             osc.sync()
 
@@ -357,24 +363,25 @@ def _apply_commit(
     calibration: CalibrationController,
     controls_visible: bool,
     latched_drive_id: str | None,
-) -> tuple[bool, str | None]:
+    drive_adjust_id: str | None,
+    drive_magnitude: float,
+) -> tuple[bool, str | None, str | None, float]:
     if committed_id == "toggle":
         if controls_visible:
             osc.force_zero()
             LOGGER.info("Controls hidden")
-            return False, None
+            return False, None, None, 0.0
         calibration.start(now)
         osc.clear_motion()
         LOGGER.info("Calibration started")
-        return False, None
+        return False, None, None, 0.0
     if committed_id == "forward":
-        return controls_visible, "forward"
+        return controls_visible, "forward", "forward", drive_magnitude
     elif committed_id == "backward":
-        return controls_visible, "backward"
+        return controls_visible, "backward", "backward", drive_magnitude
     elif committed_id == "stop":
-        osc.stop_all()
-        return controls_visible, None
-    return controls_visible, latched_drive_id
+        return controls_visible, latched_drive_id, "stop", drive_magnitude
+    return controls_visible, latched_drive_id, drive_adjust_id, drive_magnitude
 
 
 def _apply_visibility(
@@ -420,20 +427,26 @@ def _apply_lean_turn(
 def _apply_drive_compensation(
     osc: VRChatOscController,
     latched_drive_id: str | None,
+    drive_magnitude: float,
     controls_visible: bool,
     hmd_pose: HmdPose | None,
     calibrated_yaw_deg: float,
     config: AppConfig,
 ) -> None:
-    if not controls_visible or latched_drive_id is None or hmd_pose is None:
+    if (
+        not controls_visible
+        or latched_drive_id is None
+        or hmd_pose is None
+        or drive_magnitude <= 0.0
+    ):
         osc.clear_motion()
         return
 
     drive_scalar = 0.0
     if latched_drive_id == "forward":
-        drive_scalar = config.osc.vertical_axis
+        drive_scalar = config.osc.vertical_axis * drive_magnitude
     elif latched_drive_id == "backward":
-        drive_scalar = config.osc.backward_axis
+        drive_scalar = config.osc.backward_axis * drive_magnitude
 
     yaw_delta_deg = _yaw_from_direction(hmd_pose.direction) - calibrated_yaw_deg
     yaw_delta_rad = math.radians(yaw_delta_deg)
@@ -522,6 +535,40 @@ def _position_xz_from_pose(hmd_pose: HmdPose | None) -> tuple[float, float] | No
 
 def _yaw_from_direction(direction: tuple[float, float, float]) -> float:
     return math.degrees(math.atan2(-direction[0], -direction[2]))
+
+
+def _apply_drive_adjustment(
+    latched_drive_id: str | None,
+    drive_adjust_id: str | None,
+    drive_magnitude: float,
+    hover_id: str | None,
+    delta_s: float,
+    config: AppConfig,
+) -> tuple[str | None, str | None, float]:
+    if drive_adjust_id is not None and hover_id != drive_adjust_id:
+        drive_adjust_id = None
+
+    if drive_adjust_id == "forward" and latched_drive_id == "forward":
+        drive_magnitude = min(
+            1.0,
+            drive_magnitude
+            + delta_s / max(0.001, config.drive_ramp.accelerate_to_full_s),
+        )
+    elif drive_adjust_id == "backward" and latched_drive_id == "backward":
+        drive_magnitude = min(
+            1.0,
+            drive_magnitude
+            + delta_s / max(0.001, config.drive_ramp.accelerate_to_full_s),
+        )
+    elif drive_adjust_id == "stop":
+        drive_magnitude = max(
+            0.0,
+            drive_magnitude - delta_s / max(0.001, config.drive_ramp.brake_to_zero_s),
+        )
+        if drive_magnitude <= 0.0:
+            return None, None, 0.0
+
+    return latched_drive_id, drive_adjust_id, drive_magnitude
 
 
 def _bike_relative_lateral_offset_m(

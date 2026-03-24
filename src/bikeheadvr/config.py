@@ -63,8 +63,14 @@ class CalibrationConfig:
 
 @dataclass(frozen=True)
 class LeanTurnConfig:
-    deadzone_m: float = 0.2
-    full_scale_m: float = 0.4
+    deadzone_m: float = 0.05
+    full_scale_m: float = 0.30
+
+
+@dataclass(frozen=True)
+class DriveRampConfig:
+    accelerate_to_full_s: float = 3.0
+    brake_to_zero_s: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -91,6 +97,7 @@ class AppConfig:
     osc: OscConfig = field(default_factory=OscConfig)
     calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
     lean_turn: LeanTurnConfig = field(default_factory=LeanTurnConfig)
+    drive_ramp: DriveRampConfig = field(default_factory=DriveRampConfig)
     calibration_message: CalibrationMessageConfig = field(
         default_factory=CalibrationMessageConfig
     )
@@ -123,10 +130,10 @@ def default_buttons() -> tuple[ButtonConfig, ...]:
             id="forward",
             label="Forward",
             key="dev.bikeheadvr.overlay.forward",
-            width_m=0.42,
+            width_m=0.52,
             placement=OverlayPlacement(
                 x_m=0.0,
-                y_m=2.0,
+                y_m=2.5,
                 z_m=-2.0,
                 yaw_deg=0.0,
             ),
@@ -135,11 +142,11 @@ def default_buttons() -> tuple[ButtonConfig, ...]:
             id="stop",
             label="Stop",
             key="dev.bikeheadvr.overlay.stop",
-            width_m=0.42,
+            width_m=0.52,
             placement=OverlayPlacement(
                 x_m=0.0,
-                y_m=0.9,
-                z_m=-1.5,
+                y_m=0.8,
+                z_m=-2.0,
                 yaw_deg=0.0,
             ),
         ),

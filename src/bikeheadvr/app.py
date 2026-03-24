@@ -84,7 +84,6 @@ def main(argv: list[str] | None = None) -> int:
     calibrated_yaw_deg = 0.0
     latched_drive_id: str | None = None
     no_pose_started_at: float | None = None
-    turn_hold_id: str | None = None
 
     def request_stop(signum: int, _frame: object) -> None:
         nonlocal should_stop
@@ -179,8 +178,14 @@ def main(argv: list[str] | None = None) -> int:
             update = dwell.update(now, best_hit[0] if best_hit is not None else None)
             new_hover_id = update.hover_id
 
-            turn_hold_id = _apply_turn_hold(
-                osc, new_hover_id, controls_visible, turn_hold_id
+            _apply_lean_turn(
+                osc,
+                controls_visible,
+                hmd_pose,
+                calibrated_center_x_m,
+                calibrated_center_z_m,
+                calibrated_yaw_deg,
+                config,
             )
             _apply_drive_compensation(
                 osc,
@@ -265,23 +270,15 @@ def main(argv: list[str] | None = None) -> int:
                     controls_visible,
                     latched_drive_id,
                 )
-                if update.committed_id in {"left", "right"}:
-                    if update.committed_id == "left":
-                        osc.pulse_comfort_left()
-                    else:
-                        osc.pulse_comfort_right()
-                    turn_hold_id = update.committed_id
-                    turn_hover_id = (
-                        new_hover_id if new_hover_id == turn_hold_id else None
-                    )
-                    turn_hold_id = _apply_turn_hold(
-                        osc,
-                        turn_hover_id,
-                        controls_visible,
-                        turn_hold_id,
-                    )
-                elif update.committed_id in {"stop", "toggle"}:
-                    turn_hold_id = _apply_turn_hold(osc, None, controls_visible, None)
+                _apply_lean_turn(
+                    osc,
+                    controls_visible,
+                    hmd_pose,
+                    calibrated_center_x_m,
+                    calibrated_center_z_m,
+                    calibrated_yaw_deg,
+                    config,
+                )
                 _apply_drive_compensation(
                     osc,
                     latched_drive_id,
@@ -394,24 +391,30 @@ def _is_button_interactable(button_id: str, controls_visible: bool) -> bool:
     return controls_visible or button_id == "toggle"
 
 
-def _apply_turn_hold(
+def _apply_lean_turn(
     osc: VRChatOscController,
-    hover_id: str | None,
     controls_visible: bool,
-    turn_hold_id: str | None,
-) -> str | None:
-    if not controls_visible:
+    hmd_pose: HmdPose | None,
+    calibrated_center_x_m: float,
+    calibrated_center_z_m: float,
+    calibrated_yaw_deg: float,
+    config: AppConfig,
+) -> None:
+    if not controls_visible or hmd_pose is None:
         osc.clear_turn()
-        return None
-    if turn_hold_id == "left" and hover_id == "left":
-        osc.press_turn_left()
-        return "left"
-    if turn_hold_id == "right" and hover_id == "right":
-        osc.press_turn_right()
-        return "right"
-    if turn_hold_id is not None:
+        return
+
+    lateral_offset_m = _bike_relative_lateral_offset_m(
+        hmd_pose,
+        calibrated_center_x_m,
+        calibrated_center_z_m,
+        calibrated_yaw_deg,
+    )
+    turn_axis = _lean_turn_axis(lateral_offset_m, config)
+    if turn_axis == 0.0:
         osc.clear_turn()
-    return None
+        return
+    osc.set_turn_axis(turn_axis)
 
 
 def _apply_drive_compensation(
@@ -519,3 +522,30 @@ def _position_xz_from_pose(hmd_pose: HmdPose | None) -> tuple[float, float] | No
 
 def _yaw_from_direction(direction: tuple[float, float, float]) -> float:
     return math.degrees(math.atan2(-direction[0], -direction[2]))
+
+
+def _bike_relative_lateral_offset_m(
+    hmd_pose: HmdPose,
+    calibrated_center_x_m: float,
+    calibrated_center_z_m: float,
+    calibrated_yaw_deg: float,
+) -> float:
+    delta_x = hmd_pose.position[0] - calibrated_center_x_m
+    delta_z = hmd_pose.position[2] - calibrated_center_z_m
+    yaw_rad = math.radians(calibrated_yaw_deg)
+    right_x = math.cos(yaw_rad)
+    right_z = -math.sin(yaw_rad)
+    return delta_x * right_x + delta_z * right_z
+
+
+def _lean_turn_axis(lateral_offset_m: float, config: AppConfig) -> float:
+    magnitude_m = abs(lateral_offset_m)
+    if magnitude_m <= config.lean_turn.deadzone_m:
+        return 0.0
+
+    span_m = max(
+        0.001,
+        config.lean_turn.full_scale_m - config.lean_turn.deadzone_m,
+    )
+    normalized = min(1.0, (magnitude_m - config.lean_turn.deadzone_m) / span_m)
+    return math.copysign(normalized * config.osc.turn_axis, lateral_offset_m)

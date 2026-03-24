@@ -62,6 +62,12 @@ class CalibrationConfig:
 
 
 @dataclass(frozen=True)
+class LeanTurnConfig:
+    deadzone_m: float = 0.2
+    full_scale_m: float = 0.4
+
+
+@dataclass(frozen=True)
 class CalibrationMessageConfig:
     key: str = "dev.bikeheadvr.overlay.calibration_message"
     label: str = "Calibrate"
@@ -84,6 +90,7 @@ class AppConfig:
     render: RenderConfig = field(default_factory=RenderConfig)
     osc: OscConfig = field(default_factory=OscConfig)
     calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
+    lean_turn: LeanTurnConfig = field(default_factory=LeanTurnConfig)
     calibration_message: CalibrationMessageConfig = field(
         default_factory=CalibrationMessageConfig
     )
@@ -134,30 +141,6 @@ def default_buttons() -> tuple[ButtonConfig, ...]:
                 y_m=0.9,
                 z_m=-1.5,
                 yaw_deg=0.0,
-            ),
-        ),
-        ButtonConfig(
-            id="left",
-            label="Left",
-            key="dev.bikeheadvr.overlay.left",
-            width_m=0.42,
-            placement=OverlayPlacement(
-                x_m=-1.35,
-                y_m=1.5,
-                z_m=-1.5,
-                yaw_deg=yaw_facing_origin(-1.35, -1.5),
-            ),
-        ),
-        ButtonConfig(
-            id="right",
-            label="Right",
-            key="dev.bikeheadvr.overlay.right",
-            width_m=0.42,
-            placement=OverlayPlacement(
-                x_m=1.35,
-                y_m=1.5,
-                z_m=-1.5,
-                yaw_deg=yaw_facing_origin(1.35, -1.5),
             ),
         ),
         ButtonConfig(

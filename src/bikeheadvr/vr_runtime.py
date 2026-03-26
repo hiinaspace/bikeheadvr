@@ -39,6 +39,13 @@ class HmdPose:
 
 
 @dataclass(frozen=True)
+class TrackerPose:
+    device_index: int
+    serial: str
+    position: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
 class OverlayIntersection:
     uv: tuple[float, float]
     distance: float
@@ -184,6 +191,48 @@ class SteamVROverlayRuntime:
             self._overlay_api.hideOverlay(overlay.value)
 
     def get_hmd_pose(self) -> HmdPose | None:
+        poses = self._get_all_poses()
+        if poses is None:
+            return None
+        hmd_pose = poses[openvr.k_unTrackedDeviceIndex_Hmd]
+        if not hmd_pose.bPoseIsValid:
+            return None
+
+        matrix = hmd_pose.mDeviceToAbsoluteTracking
+        source = (matrix.m[0][3], matrix.m[1][3], matrix.m[2][3])
+        direction = _normalize((-matrix.m[0][2], -matrix.m[1][2], -matrix.m[2][2]))
+        return HmdPose(position=source, direction=direction)
+
+    def get_tracker_poses(self) -> list[TrackerPose]:
+        poses = self._get_all_poses()
+        if poses is None or self._system is None:
+            return []
+
+        tracker_poses: list[TrackerPose] = []
+        for device_index in range(openvr.k_unMaxTrackedDeviceCount):
+            if device_index == openvr.k_unTrackedDeviceIndex_Hmd:
+                continue
+            if (
+                self._system.getTrackedDeviceClass(device_index)
+                != openvr.TrackedDeviceClass_GenericTracker
+            ):
+                continue
+            pose = poses[device_index]
+            if not pose.bPoseIsValid:
+                continue
+            matrix = pose.mDeviceToAbsoluteTracking
+            tracker_poses.append(
+                TrackerPose(
+                    device_index=device_index,
+                    serial=self._get_device_serial(device_index),
+                    position=(matrix.m[0][3], matrix.m[1][3], matrix.m[2][3]),
+                )
+            )
+        return tracker_poses
+
+    def _get_all_poses(
+        self,
+    ) -> tuple[openvr.TrackedDevicePose_t, ...] | None:
         if self._system is None:
             raise RuntimeError("OpenVR system is not initialized")
 
@@ -193,14 +242,7 @@ class SteamVROverlayRuntime:
             0.0,
             poses,
         )
-        hmd_pose = poses[openvr.k_unTrackedDeviceIndex_Hmd]
-        if not hmd_pose.bPoseIsValid:
-            return None
-
-        matrix = hmd_pose.mDeviceToAbsoluteTracking
-        source = (matrix.m[0][3], matrix.m[1][3], matrix.m[2][3])
-        direction = _normalize((-matrix.m[0][2], -matrix.m[1][2], -matrix.m[2][2]))
-        return HmdPose(position=source, direction=direction)
+        return tuple(poses)
 
     def get_hmd_gaze_ray(self) -> GazeRay | None:
         hmd_pose = self.get_hmd_pose()
@@ -293,6 +335,18 @@ class SteamVROverlayRuntime:
         bounds.vMin = 1.0
         bounds.vMax = 0.0
         self._overlay_api.setOverlayTextureBounds(overlay.value, bounds)
+
+    def _get_device_serial(self, device_index: int) -> str:
+        if self._system is None:
+            raise RuntimeError("OpenVR system is not initialized")
+        try:
+            return self._system.getStringTrackedDeviceProperty(
+                device_index,
+                openvr.Prop_SerialNumber_String,
+            )
+        except OpenVRError:
+            LOGGER.debug("Failed to read tracker serial", exc_info=True)
+            return f"device_{device_index}"
 
 
 def _normalize(vector: tuple[float, float, float]) -> tuple[float, float, float]:

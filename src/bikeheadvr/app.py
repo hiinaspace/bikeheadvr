@@ -7,7 +7,7 @@ import signal
 import sys
 import time
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .calibration import CalibrationController
 from .config import AppConfig, ButtonConfig, OverlayPlacement
@@ -17,6 +17,14 @@ from .overlay_ui import (
     TextureVariant,
     build_button_texture,
     quantize_visual,
+)
+from .pedal_estimation import (
+    BikeRelativeTrackerPose,
+    PedalCalibrationController,
+    PedalEstimate,
+    PedalEstimator,
+    infer_foot_trackers,
+    to_bike_relative_trackers,
 )
 from .vr_runtime import (
     GazeRay,
@@ -46,6 +54,12 @@ class SceneButton:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="bikeheadvr Phase 4 OSC locomotion")
     parser.add_argument("--duration", type=float, default=0.0)
+    parser.add_argument(
+        "--locomotion-mode",
+        choices=("manual", "tracker"),
+        default="manual",
+    )
+    parser.add_argument("--pedal-calibration", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args(argv)
 
@@ -61,11 +75,25 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     configure_logging(args.verbose)
 
-    config = AppConfig()
+    base_config = AppConfig()
+    config = replace(
+        base_config,
+        locomotion_mode=args.locomotion_mode,
+        pedal_estimation=replace(
+            base_config.pedal_estimation,
+            startup_calibration_enabled=(
+                args.pedal_calibration
+                or base_config.pedal_estimation.startup_calibration_enabled
+            ),
+        ),
+    )
     runtime = SteamVROverlayRuntime(tick_hz=config.tick_hz)
     osc = VRChatOscController(config.osc)
     calibration = CalibrationController(config.calibration)
-    dwell = DwellTracker([button.id for button in config.buttons], config.dwell)
+    pedal_calibration = PedalCalibrationController(config.pedal_estimation)
+    pedal_estimator = PedalEstimator(config.tracker, config.pedal_estimation)
+    active_buttons = _active_buttons(config)
+    dwell = DwellTracker([button.id for button in active_buttons], config.dwell)
     should_stop = False
     frames_remaining = (
         None
@@ -87,6 +115,12 @@ def main(argv: list[str] | None = None) -> int:
     drive_magnitude = 0.0
     last_frame_at: float | None = None
     no_pose_started_at: float | None = None
+    tracker_estimate = PedalEstimate(
+        magnitude=0.0,
+        cadence_hz=0.0,
+        trackers_ready=False,
+        trackers_visible=0,
+    )
 
     def request_stop(signum: int, _frame: object) -> None:
         nonlocal should_stop
@@ -101,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
         LOGGER.info("%s", config.startup_banner)
         runtime.initialize()
 
-        for button in config.buttons:
+        for button in active_buttons:
             overlay = runtime.create_overlay(button)
             scene_button = SceneButton(config=button, overlay=overlay)
             scene_buttons[button.id] = scene_button
@@ -148,7 +182,8 @@ def main(argv: list[str] | None = None) -> int:
         _apply_visibility(runtime, scene_buttons, controls_visible)
 
         LOGGER.info(
-            "Phase 5 scene visible. Dwell on toggle to calibrate and show controls."
+            "Scene visible in %s mode. Dwell on toggle to calibrate and show controls.",
+            config.locomotion_mode,
         )
 
         while not should_stop:
@@ -157,6 +192,7 @@ def main(argv: list[str] | None = None) -> int:
             delta_s = 0.0 if last_frame_at is None else max(0.0, now - last_frame_at)
             last_frame_at = now
             hmd_pose = runtime.get_hmd_pose()
+            tracker_poses = runtime.get_tracker_poses()
             gaze_ray = _to_gaze_ray(hmd_pose)
             if hmd_pose is None:
                 if no_pose_started_at is None:
@@ -193,12 +229,19 @@ def main(argv: list[str] | None = None) -> int:
                 calibrated_center_z_m = calibration_status.completed_pose.z_m
                 calibrated_yaw_deg = calibration_status.completed_pose.yaw_deg
                 controls_visible = True
+                pedal_estimator.reset()
                 LOGGER.info(
                     "Calibration complete center=(%.2f, %.2f) yaw=%.1f deg",
                     calibrated_center_x_m,
                     calibrated_center_z_m,
                     calibrated_yaw_deg,
                 )
+                if (
+                    _is_tracker_mode(config)
+                    and config.pedal_estimation.startup_calibration_enabled
+                ):
+                    pedal_calibration.start(now)
+                    LOGGER.info("Pedal calibration started")
                 _apply_calibrated_placements(
                     runtime,
                     scene_buttons,
@@ -208,12 +251,45 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 _apply_visibility(runtime, scene_buttons, controls_visible)
 
+            selected_trackers = infer_foot_trackers(
+                tracker_poses,
+                config.tracker.required_feet_count,
+            )
+            bike_relative_trackers = to_bike_relative_trackers(
+                selected_trackers,
+                calibrated_center_x_m,
+                calibrated_center_z_m,
+                calibrated_yaw_deg,
+            )
+            pedal_calibration_status = pedal_calibration.update(
+                now,
+                bike_relative_trackers,
+            )
+            if pedal_calibration_status.completed_models is not None:
+                pedal_estimator.apply_calibration(
+                    pedal_calibration_status.completed_models
+                )
+                LOGGER.info(
+                    "Pedal calibration completed trackers=%s",
+                    len(pedal_calibration_status.completed_models),
+                )
+
+            overlay_title_text, overlay_subtitle_text, overlay_visible = (
+                _overlay_message(
+                    calibration_status.title_text,
+                    calibration_status.subtitle_text,
+                    calibration_status.active,
+                    pedal_calibration_status.title_text,
+                    pedal_calibration_status.subtitle_text,
+                    pedal_calibration_status.active,
+                )
+            )
             if calibration_overlay is not None and (
-                calibration_overlay.title_text != calibration_status.title_text
-                or calibration_overlay.subtitle_text != calibration_status.subtitle_text
+                calibration_overlay.title_text != overlay_title_text
+                or calibration_overlay.subtitle_text != overlay_subtitle_text
             ):
-                calibration_overlay.title_text = calibration_status.title_text
-                calibration_overlay.subtitle_text = calibration_status.subtitle_text
+                calibration_overlay.title_text = overlay_title_text
+                calibration_overlay.subtitle_text = overlay_subtitle_text
                 _apply_visual(
                     runtime,
                     config,
@@ -222,9 +298,7 @@ def main(argv: list[str] | None = None) -> int:
                     calibration_overlay.visual,
                 )
             if calibration_overlay is not None:
-                runtime.set_visible(
-                    calibration_overlay.overlay, calibration_status.active
-                )
+                runtime.set_visible(calibration_overlay.overlay, overlay_visible)
 
             for button_id, scene_button in scene_buttons.items():
                 visual = update.visuals[button_id]
@@ -259,23 +333,35 @@ def main(argv: list[str] | None = None) -> int:
                     now,
                     osc,
                     calibration,
+                    pedal_calibration,
+                    pedal_estimator,
                     controls_visible,
                     latched_drive_id,
                     drive_adjust_id,
                     drive_magnitude,
+                    config,
                 )
                 _apply_visibility(runtime, scene_buttons, controls_visible)
 
-            latched_drive_id, drive_adjust_id, drive_magnitude = (
-                _apply_drive_adjustment(
-                    latched_drive_id,
-                    drive_adjust_id,
-                    drive_magnitude,
-                    new_hover_id,
-                    delta_s,
-                    config,
+            if _is_tracker_mode(config):
+                tracker_estimate = _update_tracker_drive(
+                    pedal_estimator,
+                    now,
+                    bike_relative_trackers,
+                    controls_visible,
+                    pedal_calibration_status.active or calibration_status.active,
                 )
-            )
+            else:
+                latched_drive_id, drive_adjust_id, drive_magnitude = (
+                    _apply_drive_adjustment(
+                        latched_drive_id,
+                        drive_adjust_id,
+                        drive_magnitude,
+                        new_hover_id,
+                        delta_s,
+                        config,
+                    )
+                )
             _apply_lean_turn(
                 osc,
                 controls_visible,
@@ -285,15 +371,26 @@ def main(argv: list[str] | None = None) -> int:
                 calibrated_yaw_deg,
                 config,
             )
-            _apply_drive_compensation(
-                osc,
-                latched_drive_id,
-                drive_magnitude,
-                controls_visible,
-                hmd_pose,
-                calibrated_yaw_deg,
-                config,
-            )
+            if _is_tracker_mode(config):
+                _apply_drive_compensation(
+                    osc,
+                    "forward",
+                    tracker_estimate.magnitude,
+                    controls_visible,
+                    hmd_pose,
+                    calibrated_yaw_deg,
+                    config,
+                )
+            else:
+                _apply_drive_compensation(
+                    osc,
+                    latched_drive_id,
+                    drive_magnitude,
+                    controls_visible,
+                    hmd_pose,
+                    calibrated_yaw_deg,
+                    config,
+                )
 
             osc.sync()
 
@@ -361,20 +458,29 @@ def _apply_commit(
     now: float,
     osc: VRChatOscController,
     calibration: CalibrationController,
+    pedal_calibration: PedalCalibrationController,
+    pedal_estimator: PedalEstimator,
     controls_visible: bool,
     latched_drive_id: str | None,
     drive_adjust_id: str | None,
     drive_magnitude: float,
+    config: AppConfig,
 ) -> tuple[bool, str | None, str | None, float]:
     if committed_id == "toggle":
         if controls_visible:
             osc.force_zero()
+            pedal_calibration.cancel()
+            pedal_estimator.reset()
             LOGGER.info("Controls hidden")
             return False, None, None, 0.0
         calibration.start(now)
+        pedal_calibration.cancel()
+        pedal_estimator.reset()
         osc.clear_motion()
         LOGGER.info("Calibration started")
         return False, None, None, 0.0
+    if _is_tracker_mode(config):
+        return controls_visible, latched_drive_id, drive_adjust_id, drive_magnitude
     if committed_id == "forward":
         return controls_visible, "forward", "forward", drive_magnitude
     elif committed_id == "backward":
@@ -390,7 +496,7 @@ def _apply_visibility(
     controls_visible: bool,
 ) -> None:
     for button_id, scene_button in scene_buttons.items():
-        visible = controls_visible or button_id == "toggle"
+        visible = button_id == "toggle" or controls_visible
         runtime.set_visible(scene_button.overlay, visible)
 
 
@@ -569,6 +675,49 @@ def _apply_drive_adjustment(
             return None, None, 0.0
 
     return latched_drive_id, drive_adjust_id, drive_magnitude
+
+
+def _active_buttons(config: AppConfig) -> tuple[ButtonConfig, ...]:
+    if _is_tracker_mode(config):
+        return tuple(button for button in config.buttons if button.id == "toggle")
+    return config.buttons
+
+
+def _is_tracker_mode(config: AppConfig) -> bool:
+    return config.locomotion_mode == "tracker"
+
+
+def _overlay_message(
+    primary_title_text: str | None,
+    primary_subtitle_text: str | None,
+    primary_visible: bool,
+    secondary_title_text: str | None,
+    secondary_subtitle_text: str | None,
+    secondary_visible: bool,
+) -> tuple[str | None, str | None, bool]:
+    if primary_visible:
+        return primary_title_text, primary_subtitle_text, True
+    if secondary_visible:
+        return secondary_title_text, secondary_subtitle_text, True
+    return None, None, False
+
+
+def _update_tracker_drive(
+    pedal_estimator: PedalEstimator,
+    now: float,
+    bike_relative_trackers: list[BikeRelativeTrackerPose],
+    controls_visible: bool,
+    calibration_active: bool,
+) -> PedalEstimate:
+    if not controls_visible or calibration_active:
+        pedal_estimator.reset()
+        return PedalEstimate(
+            magnitude=0.0,
+            cadence_hz=0.0,
+            trackers_ready=False,
+            trackers_visible=len(bike_relative_trackers),
+        )
+    return pedal_estimator.update(now, bike_relative_trackers)
 
 
 def _bike_relative_lateral_offset_m(

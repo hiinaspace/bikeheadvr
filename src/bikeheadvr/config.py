@@ -74,6 +74,25 @@ class DriveRampConfig:
 
 
 @dataclass(frozen=True)
+class TrackerConfig:
+    required_feet_count: int = 2
+    dropout_grace_s: float = 0.35
+
+
+@dataclass(frozen=True)
+class PedalEstimationConfig:
+    startup_calibration_enabled: bool = False
+    calibration_duration_s: float = 4.0
+    deadband_hz: float = 0.2
+    full_speed_hz: float = 1.2
+    magnitude_rise_s: float = 0.3
+    magnitude_fall_s: float = 0.6
+    center_follow_s: float = 2.0
+    min_orbit_radius_m: float = 0.04
+    min_samples: int = 30
+
+
+@dataclass(frozen=True)
 class CalibrationMessageConfig:
     key: str = "dev.bikeheadvr.overlay.calibration_message"
     label: str = "Calibrate"
@@ -92,12 +111,17 @@ class CalibrationMessageConfig:
 class AppConfig:
     tick_hz: float = 45.0
     startup_banner: str = "bikeheadvr Phase 5 calibration"
+    locomotion_mode: str = "manual"
     dwell: DwellConfig = field(default_factory=DwellConfig)
     render: RenderConfig = field(default_factory=RenderConfig)
     osc: OscConfig = field(default_factory=OscConfig)
     calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
     lean_turn: LeanTurnConfig = field(default_factory=LeanTurnConfig)
     drive_ramp: DriveRampConfig = field(default_factory=DriveRampConfig)
+    tracker: TrackerConfig = field(default_factory=TrackerConfig)
+    pedal_estimation: PedalEstimationConfig = field(
+        default_factory=PedalEstimationConfig
+    )
     calibration_message: CalibrationMessageConfig = field(
         default_factory=CalibrationMessageConfig
     )

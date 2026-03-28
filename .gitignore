@@ -9,6 +9,12 @@ wheels/
 # Virtual environments
 .venv
 .uv-cache
+.pytest_cache/
+.pytest-tmp/
+.pytest-tmp-fixtures/
+.test-tmp/
+pytest-cache-files-*/
+tmp*/
 
 # Local reference clones
 vendor/

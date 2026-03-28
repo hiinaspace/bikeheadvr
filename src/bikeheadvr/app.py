@@ -5,9 +5,12 @@ import logging
 import math
 import signal
 import sys
+import threading
 import time
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 from .calibration import CalibrationController
 from .config import AppConfig, ButtonConfig, OverlayPlacement
@@ -39,6 +42,24 @@ from .vrchat_osc import VRChatOscController
 LOGGER = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class RuntimeOptions:
+    duration: float = 0.0
+    locomotion_mode: str = "manual"
+    pedal_calibration: bool = False
+    verbose: bool = False
+    log_file: Path | None = None
+
+
+@dataclass(frozen=True)
+class RuntimeStatus:
+    state: str
+    message: str
+
+
+StatusCallback = Callable[[RuntimeStatus], None]
+
+
 @dataclass
 class SceneButton:
     config: ButtonConfig
@@ -52,7 +73,7 @@ class SceneButton:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="bikeheadvr Phase 4 OSC locomotion")
+    parser = argparse.ArgumentParser(description="bikeheadvr development CLI")
     parser.add_argument("--duration", type=float, default=0.0)
     parser.add_argument(
         "--locomotion-mode",
@@ -64,29 +85,62 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def configure_logging(verbose: bool) -> None:
+def configure_logging(verbose: bool, log_file: Path | None = None) -> None:
     level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-    )
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+    if not root_logger.handlers:
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(formatter)
+        root_logger.addHandler(stream_handler)
+
+    if log_file is None:
+        return
+
+    target = log_file.resolve()
+    if any(
+        isinstance(handler, logging.FileHandler)
+        and Path(handler.baseFilename) == target
+        for handler in root_logger.handlers
+    ):
+        return
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(target, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    root_logger.addHandler(file_handler)
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-    configure_logging(args.verbose)
-
+def build_runtime_config(options: RuntimeOptions) -> AppConfig:
     base_config = AppConfig()
-    config = replace(
+    return replace(
         base_config,
-        locomotion_mode=args.locomotion_mode,
+        locomotion_mode=options.locomotion_mode,
         pedal_estimation=replace(
             base_config.pedal_estimation,
             startup_calibration_enabled=(
-                args.pedal_calibration
+                options.pedal_calibration
                 or base_config.pedal_estimation.startup_calibration_enabled
             ),
         ),
     )
+
+
+def run_session(
+    options: RuntimeOptions,
+    stop_event: threading.Event | None = None,
+    status_callback: StatusCallback | None = None,
+) -> int:
+    configure_logging(options.verbose, options.log_file)
+
+    def publish(state: str, message: str) -> None:
+        LOGGER.info("%s", message)
+        if status_callback is not None:
+            status_callback(RuntimeStatus(state=state, message=message))
+
+    config = build_runtime_config(options)
     runtime = SteamVROverlayRuntime(tick_hz=config.tick_hz)
     osc = VRChatOscController(config.osc)
     calibration = CalibrationController(config.calibration)
@@ -94,11 +148,11 @@ def main(argv: list[str] | None = None) -> int:
     pedal_estimator = PedalEstimator(config.tracker, config.pedal_estimation)
     active_buttons = _active_buttons(config)
     dwell = DwellTracker([button.id for button in active_buttons], config.dwell)
-    should_stop = False
+    shutdown_requested = False
     frames_remaining = (
         None
-        if args.duration <= 0
-        else max(1, int(round(args.duration * config.tick_hz)))
+        if options.duration <= 0
+        else max(1, int(round(options.duration * config.tick_hz)))
     )
     scene_buttons: dict[str, SceneButton] = {}
     calibration_overlay: SceneButton | None = None
@@ -123,16 +177,18 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     def request_stop(signum: int, _frame: object) -> None:
-        nonlocal should_stop
+        nonlocal shutdown_requested
         LOGGER.info("Received signal %s, shutting down.", signum)
-        should_stop = True
+        shutdown_requested = True
+        if stop_event is not None:
+            stop_event.set()
 
     for signum in (signal.SIGINT, signal.SIGTERM):
         with suppress(ValueError):
             signal.signal(signum, request_stop)
 
     try:
-        LOGGER.info("%s", config.startup_banner)
+        publish("starting", config.startup_banner)
         runtime.initialize()
 
         for button in active_buttons:
@@ -181,12 +237,19 @@ def main(argv: list[str] | None = None) -> int:
         )
         _apply_visibility(runtime, scene_buttons, controls_visible)
 
-        LOGGER.info(
-            "Scene visible in %s mode. Dwell on toggle to calibrate and show controls.",
-            config.locomotion_mode,
+        publish(
+            "running",
+            (
+                "Running in "
+                f"{config.locomotion_mode} mode. Dwell on toggle to calibrate."
+            ),
         )
 
-        while not should_stop:
+        while not shutdown_requested:
+            if stop_event is not None and stop_event.is_set():
+                publish("stopping", "Stop requested.")
+                break
+
             runtime.pump_overlay_events()
             now = time.monotonic()
             delta_s = 0.0 if last_frame_at is None else max(0.0, now - last_frame_at)
@@ -241,7 +304,7 @@ def main(argv: list[str] | None = None) -> int:
                     and config.pedal_estimation.startup_calibration_enabled
                 ):
                     pedal_calibration.start(now)
-                    LOGGER.info("Pedal calibration started")
+                    publish("info", "Pedal calibration started.")
                 _apply_calibrated_placements(
                     runtime,
                     scene_buttons,
@@ -269,9 +332,10 @@ def main(argv: list[str] | None = None) -> int:
                 pedal_estimator.apply_calibration(
                     pedal_calibration_status.completed_models
                 )
-                LOGGER.info(
-                    "Pedal calibration completed trackers=%s",
-                    len(pedal_calibration_status.completed_models),
+                publish(
+                    "info",
+                    "Pedal calibration completed "
+                    f"for {len(pedal_calibration_status.completed_models)} trackers.",
                 )
 
             overlay_title_text, overlay_subtitle_text, overlay_visible = (
@@ -398,18 +462,38 @@ def main(argv: list[str] | None = None) -> int:
             if frames_remaining is not None:
                 frames_remaining -= 1
                 if frames_remaining <= 0:
-                    LOGGER.info("Requested duration elapsed, shutting down.")
+                    publish("stopping", "Requested duration elapsed, shutting down.")
                     break
     except RuntimeInitError as exc:
-        LOGGER.error("%s", exc)
+        message = str(exc)
+        LOGGER.error("%s", message)
+        if status_callback is not None:
+            status_callback(RuntimeStatus(state="error", message=message))
         return 1
     except KeyboardInterrupt:
-        LOGGER.info("Interrupted, shutting down.")
+        publish("stopping", "Interrupted, shutting down.")
     finally:
         osc.force_zero()
         runtime.shutdown()
+        if status_callback is not None:
+            status_callback(RuntimeStatus(state="stopped", message="Stopped."))
 
     return 0
+
+
+def cli_main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    options = RuntimeOptions(
+        duration=args.duration,
+        locomotion_mode=args.locomotion_mode,
+        pedal_calibration=args.pedal_calibration,
+        verbose=args.verbose,
+    )
+    return run_session(options)
+
+
+def main(argv: list[str] | None = None) -> int:
+    return cli_main(argv)
 
 
 if __name__ == "__main__":

@@ -1,48 +1,54 @@
 ## bikeheadvr
 
-Prototype for a SteamVR/OpenVR overlay that lets you move around in vrchat
-without your controller joysticks. Instead, you can just look at some gaze
-targets to trigger forward/back, and tilt your head from side to side to turn.
-Or if you have feet trackers, you can pedal/walk to move forward.
+Desktop SteamVR/OpenVR overlay for controllerless VRChat bike locomotion.
 
-This is specifically useful for when you want ride a stationary bike while
-looking at scenery in VRChat but without having to awkwardly keep the
-controllers in your palms while also holding the handlebars.
+You can move around in VRChat without using controller joysticks. In manual
+mode, you stare at gaze targets to trigger movement. In tracker mode, you can
+pedal or walk in place with foot trackers to move forward.
 
-## Use
+## Windows desktop app
 
-If you don't have `uv` already, [install it following their official instructions](https://docs.astral.sh/uv/#highlights), or if you're not some nerd open up a command line and run (dude trust me):
+The primary app entrypoint is now a small Windows desktop UI with:
 
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
+- `manual` or `tracker` locomotion mode selection
+- startup pedal calibration toggle
+- verbose logging toggle
+- `Start` / `Stop` controls
+- a system tray icon so the app can hide and keep running in the background
 
-Then you can run this actual project with:
+User settings are persisted under the Windows roaming AppData config directory.
 
-```powershell
-uvx git+https://github.com/hiinaspace/bikeheadvr 
-```
+## Local development
 
-or if you have trackers:
+If you want to run the desktop app locally:
 
 ```powershell
-uvx git+https://github.com/hiinaspace/bikeheadvr ---location-mode tracker
+uv sync --group build
+uv run bikeheadvr
 ```
 
-Turn on [VRChat OSC](https://docs.vrchat.com/docs/osc-overview) if it's not on
-already. You might also have to turn off "comfort turn" (sorry).
+If you want the old development CLI flow:
 
-Then sit on your bike (or treadmill).
+```powershell
+uv run bikeheadvr-cli --locomotion-mode tracker --verbose
+```
 
-Look down under your feet, you should see a circle that says 'toggle'. If you
-stare at it a bit, you'll see a "calibrate" countdown. Look forward, and this'll
-calibrate your forward direction.
+## Packaging
 
-Then you'll see forward/stop gaze buttons. Stare at the forward one a
-bit to move forward, until you gaze at the 'stop' button. The forward vector
-will compensate for your head movement so you can look sideways while still
-moving forward (relative to your initial calibration).
+The repository includes:
 
-If you're using tracker mode, you should start moving as soon as you move your feet.
+- a PyInstaller spec at `bikeheadvr.spec`
+- a GitHub Actions workflow at `.github/workflows/release.yml`
 
-At any time, look straight down at the 'toggle' circle to disable movement again, or press CTRL+C in the terminal where the program is running..
+Manual runs and version tags such as `v0.1.0` build a Windows executable and
+upload it as an artifact. Tagged builds also attach `bikeheadvr.exe` to the
+GitHub Release.
+
+For local packaging:
+
+```powershell
+uv sync --group build
+uv run pyinstaller --noconfirm bikeheadvr.spec
+```
+
+The built executable will be written to `dist\bikeheadvr.exe`.

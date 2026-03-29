@@ -34,9 +34,10 @@ uvx git+https://github.com/hiinaspace/bikeheadvr --help
 5. Press "Start".
 6. Sit on your stationary bike.
 7. Look down under your feet, you should see a circle that says 'toggle'. If you stare at it a bit, you'll see a "calibrate" countdown. Look forward, and this'll calibrate your forward direction.
-8. You'll see forward/stop gaze buttons. Stare at the forward one a bit to move forward, until you gaze at the 'stop' button. If you're using tracker mode, you should start moving as soon as you move your feet. The forward vector will compensate for your head movement so you can look sideways while still moving forward (relative to your initial calibration).
-9. At any time, look straight down at the 'toggle' circle to stop all movement and hide the targets.
-10. Exit the program by right-clicking on the icon in your system tray.
+8. You'll see forward/stop gaze buttons. Stare at the forward one a bit to move forward, until you gaze at the 'stop' button. If you're using tracker mode, there aren't any buttons, but moving your feet (presumably on pedals) will move you forward. This will also compensate for your head movement, so you can look sideways while still moving forward.
+9. To turn, move your head left or right by about ~20cm. 
+10. At any time, look straight down at the 'toggle' circle to stop all movement and hide the targets.
+11. Exit the program by right-clicking on the icon in your system tray.
 
 ## Local development
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib.metadata
+import json
 import logging
 import math
 import os
@@ -106,8 +108,11 @@ class SteamVROverlayRuntime:
 
     def initialize(self) -> None:
         try:
+            _log_openvr_diagnostics()
             runtime_path = openvr.getRuntimePath()
             LOGGER.info("OpenVR runtime path: %s", runtime_path)
+            _log_steamvr_version(runtime_path)
+            _log_vrserver_running()
             self._system = openvr.init(openvr.VRApplication_Overlay)
             self._overlay_api = openvr.VROverlay()
             self._texture_manager = OpenGLTextureManager()
@@ -323,6 +328,17 @@ class SteamVROverlayRuntime:
                 f"Expected Steam log directory: {steam_log_dir}. "
                 "This can happen inside the sandbox even when SteamVR is installed."
             )
+        if "InterfaceNotFound" in text:
+            return (
+                "OpenVR initialization failed: SteamVR could not provide the required "
+                f"interface ({openvr.IVRSystem_Version}, openvr {_openvr_package_version()}). "
+                "Make sure SteamVR is running before starting bikeheadvr. "
+                "If SteamVR is running: open Steam, right-click SteamVR > Properties > "
+                "Local Files > Verify integrity of game files, then restart SteamVR. "
+                "If the problem persists, check for SteamVR updates under Properties > Updates "
+                "or try the SteamVR Beta branch (Properties > Betas). "
+                f"Technical details: {text}"
+            )
         return f"OpenVR initialization failed: {text}"
 
     def _apply_texture_bounds(self, overlay: OverlayHandle) -> None:
@@ -347,6 +363,50 @@ class SteamVROverlayRuntime:
         except OpenVRError:
             LOGGER.debug("Failed to read tracker serial", exc_info=True)
             return f"device_{device_index}"
+
+
+def _openvr_package_version() -> str:
+    try:
+        return importlib.metadata.version("openvr")
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
+
+def _log_openvr_diagnostics() -> None:
+    LOGGER.info("openvr package version: %s", _openvr_package_version())
+
+
+def _log_steamvr_version(runtime_path: str) -> None:
+    package_json = os.path.join(runtime_path, "package.json")
+    try:
+        with open(package_json, encoding="utf-8") as f:
+            data = json.load(f)
+        version = data.get("version") or data.get("Version") or "unknown"
+        LOGGER.info("SteamVR package.json version: %s", version)
+    except Exception:
+        LOGGER.debug("Could not read SteamVR package.json at %s", package_json, exc_info=True)
+
+
+def _log_vrserver_running() -> None:
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq vrserver.exe", "/NH", "/FO", "CSV"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        running = "vrserver.exe" in result.stdout.lower()
+        if running:
+            LOGGER.info("vrserver.exe is running")
+        else:
+            LOGGER.warning(
+                "vrserver.exe not found in process list — SteamVR may not be running. "
+                "Start SteamVR before launching bikeheadvr."
+            )
+    except Exception:
+        LOGGER.debug("Could not check vrserver.exe status", exc_info=True)
 
 
 def _normalize(vector: tuple[float, float, float]) -> tuple[float, float, float]:

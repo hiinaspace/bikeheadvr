@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib.metadata
-import json
 import logging
 import math
 import os
@@ -109,9 +108,10 @@ class SteamVROverlayRuntime:
     def initialize(self) -> None:
         try:
             _log_openvr_diagnostics()
+            _log_openvrpaths()
             runtime_path = openvr.getRuntimePath()
             LOGGER.info("OpenVR runtime path: %s", runtime_path)
-            _log_steamvr_version(runtime_path)
+            _log_vrclient_dll(runtime_path)
             _log_vrserver_running()
             self._system = openvr.init(openvr.VRApplication_Overlay)
             self._overlay_api = openvr.VROverlay()
@@ -329,14 +329,19 @@ class SteamVROverlayRuntime:
                 "This can happen inside the sandbox even when SteamVR is installed."
             )
         if "InterfaceNotFound" in text:
+            steam_logs = os.path.join(
+                os.environ.get("PROGRAMFILES(X86)", ""), "Steam", "logs", "vrserver.txt"
+            )
             return (
-                "OpenVR initialization failed: SteamVR could not provide the required "
-                f"interface ({openvr.IVRSystem_Version}, openvr {_openvr_package_version()}). "
-                "Make sure SteamVR is running before starting bikeheadvr. "
-                "If SteamVR is running: open Steam, right-click SteamVR > Properties > "
-                "Local Files > Verify integrity of game files, then restart SteamVR. "
-                "If the problem persists, check for SteamVR updates under Properties > Updates "
-                "or try the SteamVR Beta branch (Properties > Betas). "
+                "OpenVR initialization failed: could not load a required SteamVR runtime interface "
+                f"({openvr.IVRSystem_Version}, openvr {_openvr_package_version()}). "
+                "bikeheadvr requires SteamVR specifically — it does not work with the Meta/Oculus "
+                "or Windows Mixed Reality runtimes. "
+                "Open SteamVR from your Steam library and confirm it shows your headset as connected, "
+                "then start bikeheadvr. "
+                "If SteamVR is already open, the openvrpaths.vrpath and vrclient_x64.dll lines above "
+                "in the log file will show where OpenVR is looking for its runtime. "
+                f"SteamVR's own log for more detail: {steam_logs}. "
                 f"Technical details: {text}"
             )
         return f"OpenVR initialization failed: {text}"
@@ -376,15 +381,28 @@ def _log_openvr_diagnostics() -> None:
     LOGGER.info("openvr package version: %s", _openvr_package_version())
 
 
-def _log_steamvr_version(runtime_path: str) -> None:
-    package_json = os.path.join(runtime_path, "package.json")
+
+def _log_openvrpaths() -> None:
+    vrpath_file = os.path.join(
+        os.environ.get("LOCALAPPDATA", ""), "openvr", "openvrpaths.vrpath"
+    )
     try:
-        with open(package_json, encoding="utf-8") as f:
-            data = json.load(f)
-        version = data.get("version") or data.get("Version") or "unknown"
-        LOGGER.info("SteamVR package.json version: %s", version)
+        with open(vrpath_file, encoding="utf-8") as f:
+            contents = f.read()
+        LOGGER.info("openvrpaths.vrpath (%s): %s", vrpath_file, contents.strip())
+    except FileNotFoundError:
+        LOGGER.warning("openvrpaths.vrpath not found at %s — OpenVR may not be configured", vrpath_file)
     except Exception:
-        LOGGER.debug("Could not read SteamVR package.json at %s", package_json, exc_info=True)
+        LOGGER.debug("Could not read openvrpaths.vrpath at %s", vrpath_file, exc_info=True)
+
+
+def _log_vrclient_dll(runtime_path: str) -> None:
+    dll_path = os.path.join(runtime_path, "bin", "vrclient_x64.dll")
+    if os.path.exists(dll_path):
+        size = os.path.getsize(dll_path)
+        LOGGER.info("vrclient_x64.dll found (%d bytes): %s", size, dll_path)
+    else:
+        LOGGER.warning("vrclient_x64.dll not found at %s", dll_path)
 
 
 def _log_vrserver_running() -> None:

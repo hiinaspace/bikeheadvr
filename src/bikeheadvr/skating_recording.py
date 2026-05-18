@@ -396,6 +396,7 @@ def skating_calibration_to_dict(model: SkatingCalibrationModel) -> dict[str, Any
                 "baseline_right_m": foot.baseline_right_m,
                 "baseline_forward_m": foot.baseline_forward_m,
                 "baseline_up": list(foot.baseline_up),
+                "skate_forward_local": list(foot.skate_forward_local),
             }
             for serial, foot in model.feet.items()
         },
@@ -419,6 +420,9 @@ def skating_calibration_from_dict(raw: dict[str, Any]) -> SkatingCalibrationMode
                 baseline_right_m=float(foot["baseline_right_m"]),
                 baseline_forward_m=float(foot["baseline_forward_m"]),
                 baseline_up=_tuple3(foot.get("baseline_up", (0.0, 0.0, 0.0))),
+                skate_forward_local=_tuple3(
+                    foot.get("skate_forward_local", (0.0, 0.0, 0.0))
+                ),
             )
             for serial, foot in raw["feet"].items()
         },
@@ -554,7 +558,10 @@ def _calibration_key(model: SkatingCalibrationModel) -> tuple[str, ...]:
                 f"{foot.baseline_forward_m:.4f}:"
                 f"{foot.baseline_up[0]:.4f}:"
                 f"{foot.baseline_up[1]:.4f}:"
-                f"{foot.baseline_up[2]:.4f}"
+                f"{foot.baseline_up[2]:.4f}:"
+                f"{foot.skate_forward_local[0]:.4f}:"
+                f"{foot.skate_forward_local[1]:.4f}:"
+                f"{foot.skate_forward_local[2]:.4f}"
             )
         )
     return tuple(parts)

@@ -16,6 +16,7 @@ class SkatingFootCalibration:
     baseline_right_m: float
     baseline_forward_m: float
     baseline_up: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    skate_forward_local: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 
 @dataclass(frozen=True)
@@ -207,15 +208,15 @@ class SkatingEstimator:
                 foot_model.ground_y_m,
                 self._config,
             )
-            tracker_yaw = tracker_yaw_deg(tracker)
+            live_skate_yaw_deg = skate_world_yaw_deg(tracker, foot_model)
             skate_yaw_deg = _wrap_skate_axis_deg(
-                tracker_yaw - foot_model.yaw_offset_deg - model.yaw_deg
+                live_skate_yaw_deg - model.yaw_deg
             )
-            baseline_tracker_yaw_deg = foot_model.yaw_offset_deg + model.yaw_deg
             tilt_deg = tracker_tilt_deg(
                 tracker,
                 foot_model.baseline_up,
-                baseline_tracker_yaw_deg,
+                model.yaw_deg,
+                current_yaw_deg=live_skate_yaw_deg,
             )
             if foot_state.grounded:
                 grounded_feet += 1
@@ -490,6 +491,10 @@ def build_skating_calibration(
             baseline_right_m=right_m,
             baseline_forward_m=forward_m,
             baseline_up=tracker_up(tracker),
+            skate_forward_local=_local_vector_from_world(
+                tracker.orientation,
+                _forward_vector_from_yaw(yaw_deg),
+            ),
         )
     return SkatingCalibrationModel(
         center_x_m=center_x_m,
@@ -559,6 +564,17 @@ def tracker_yaw_deg(tracker: TrackerPose) -> float:
     return _yaw_from_direction(forward)
 
 
+def skate_world_yaw_deg(
+    tracker: TrackerPose,
+    calibration: SkatingFootCalibration,
+) -> float:
+    if _vector_magnitude(calibration.skate_forward_local) > 0.0:
+        forward = _matvec3(tracker.orientation, calibration.skate_forward_local)
+        if math.hypot(forward[0], forward[2]) >= 0.001:
+            return _yaw_from_direction(forward)
+    return tracker_yaw_deg(tracker) - calibration.yaw_offset_deg
+
+
 def tracker_up(tracker: TrackerPose) -> tuple[float, float, float]:
     return _normalize(
         (
@@ -573,11 +589,17 @@ def tracker_tilt_deg(
     tracker: TrackerPose,
     baseline_up: tuple[float, float, float],
     baseline_yaw_deg: float = 0.0,
+    *,
+    current_yaw_deg: float | None = None,
 ) -> float:
     if _vector_magnitude(baseline_up) <= 0.0:
         return 0.0
     current_up = tracker_up(tracker)
-    yaw_delta_deg = tracker_yaw_deg(tracker) - baseline_yaw_deg
+    yaw_delta_deg = (
+        tracker_yaw_deg(tracker)
+        if current_yaw_deg is None
+        else current_yaw_deg
+    ) - baseline_yaw_deg
     baseline = _normalize(rotate_world_y(baseline_up, yaw_delta_deg))
     dot = _clamp(
         current_up[0] * baseline[0]
@@ -600,6 +622,43 @@ def rotate_world_y(
         vector[0] * cos_yaw + vector[2] * sin_yaw,
         vector[1],
         -vector[0] * sin_yaw + vector[2] * cos_yaw,
+    )
+
+
+def _forward_vector_from_yaw(yaw_deg: float) -> tuple[float, float, float]:
+    yaw_rad = math.radians(yaw_deg)
+    return (-math.sin(yaw_rad), 0.0, -math.cos(yaw_rad))
+
+
+def _local_vector_from_world(
+    orientation: tuple[
+        tuple[float, float, float],
+        tuple[float, float, float],
+        tuple[float, float, float],
+    ],
+    world_vector: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    return _normalize(
+        (
+            sum(orientation[row][0] * world_vector[row] for row in range(3)),
+            sum(orientation[row][1] * world_vector[row] for row in range(3)),
+            sum(orientation[row][2] * world_vector[row] for row in range(3)),
+        )
+    )
+
+
+def _matvec3(
+    matrix: tuple[
+        tuple[float, float, float],
+        tuple[float, float, float],
+        tuple[float, float, float],
+    ],
+    vector: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    return (
+        sum(matrix[0][idx] * vector[idx] for idx in range(3)),
+        sum(matrix[1][idx] * vector[idx] for idx in range(3)),
+        sum(matrix[2][idx] * vector[idx] for idx in range(3)),
     )
 
 

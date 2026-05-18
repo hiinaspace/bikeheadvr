@@ -27,20 +27,25 @@ debug contact, braking, and turn behavior.
 - The current tuning intentionally preserves forward glide: recovery strokes and
   mostly aligned passive braking are relieved aggressively until we capture
   deliberate braking samples.
+- Live tests suggested foot tilt was corrupting apparent skate yaw. New
+  calibrations now store a tracker-local skate forward axis instead of relying
+  on tracker `-Z` plus a yaw offset.
 
 ## Near-Term Tasks
 
 1. Record clean single-push and alternating-push samples with raw-frame metadata.
-2. Live-test the recovery relief and looser passive braking against alternating
+2. Recalibrate and live-test whether foot overlays keep their yaw when the foot
+   is lifted or tilted.
+3. Live-test the recovery relief and looser passive braking against alternating
    pushes.
-3. Record deliberate braking samples if stopping becomes too hard.
-4. Replay the new recordings and compare contact load, force, and touchdown
+4. Record deliberate braking samples if stopping becomes too hard.
+5. Replay the new recordings and compare contact load, force, and touchdown
    braking against expected motion.
-5. Decide whether hip tracker COM should replace HMD XZ for force/torque
+6. Decide whether hip tracker COM should replace HMD XZ for force/torque
    leverage beyond normal-load estimation.
-6. Use the ghost debug overlays to compare COM, force, torque, and body yaw
+7. Use the ghost debug overlays to compare COM, force, torque, and body yaw
    during live testing.
-7. Re-test chaperone yaw as a presentation transform only.
+8. Re-test chaperone yaw as a presentation transform only.
 
 ## Regression Tests
 

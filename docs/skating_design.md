@@ -73,6 +73,10 @@ The room-fixed frame after skating calibration:
 - `+right` is perpendicular to that yaw
 - foot tracker yaw offsets are recorded so live tracker yaw can become live
   skate-axis yaw
+- the calibrated skate forward axis is also stored in tracker-local coordinates,
+  so live 2D skate yaw comes from that calibrated foot axis rather than assuming
+  a fixed tracker-local axis. This avoids pitch/roll changing the apparent yaw
+  when trackers are mounted yawed relative to the foot.
 
 Current estimator velocity, foot positions, forces, and torque are represented
 in this frame.

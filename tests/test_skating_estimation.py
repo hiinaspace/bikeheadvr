@@ -11,7 +11,9 @@ from bikeheadvr.skating_estimation import (
     build_skating_calibration,
     infer_skating_body_position,
     map_local_velocity_to_axes,
+    skate_world_yaw_deg,
     tracker_tilt_deg,
+    tracker_yaw_deg,
 )
 from bikeheadvr.vr_runtime import DevicePose, HmdPose, TrackerPose
 
@@ -103,6 +105,31 @@ def orientation_from_yaw_pitch(
     pitch = orientation_from_pitch(pitch_deg)
     return tuple(
         tuple(sum(yaw[row][idx] * pitch[idx][col] for idx in range(3)) for col in range(3))
+        for row in range(3)
+    )
+
+
+def matmul_orientation(
+    left: tuple[
+        tuple[float, float, float],
+        tuple[float, float, float],
+        tuple[float, float, float],
+    ],
+    right: tuple[
+        tuple[float, float, float],
+        tuple[float, float, float],
+        tuple[float, float, float],
+    ],
+) -> tuple[
+    tuple[float, float, float],
+    tuple[float, float, float],
+    tuple[float, float, float],
+]:
+    return tuple(
+        tuple(
+            sum(left[row][idx] * right[idx][col] for idx in range(3))
+            for col in range(3)
+        )
         for row in range(3)
     )
 
@@ -313,6 +340,52 @@ def test_skate_yaw_is_an_axis_not_a_direction() -> None:
     estimate = estimator.update(0.2, hmd(), backwards_same_axis)
 
     assert estimate.feet["left"].skate_yaw_deg == pytest.approx(0.0)
+
+
+def test_skate_yaw_uses_calibrated_foot_axis_when_tracker_is_tilted() -> None:
+    mounted_orientation = orientation_from_yaw(60.0)
+    tilted_orientation = matmul_orientation(
+        orientation_from_pitch(75.0),
+        mounted_orientation,
+    )
+    feet = [
+        tracker(
+            "left",
+            -0.2,
+            0.0,
+            0.0,
+            orientation=mounted_orientation,
+        ),
+        tracker("right", 0.2, 0.0, 0.0),
+    ]
+    model = build_skating_calibration(0.0, 0.0, 0.0, hmd(), feet, 2)
+    assert model is not None
+    live_left = tracker(
+        "left",
+        -0.2,
+        0.0,
+        0.0,
+        orientation=tilted_orientation,
+    )
+    old_yaw = tracker_yaw_deg(live_left) - model.feet["left"].yaw_offset_deg
+
+    estimator = SkatingEstimator(TrackerConfig(required_feet_count=2), config_for_tests())
+    estimator.apply_calibration(model)
+    estimate = estimator.update(
+        0.2,
+        hmd(),
+        [
+            live_left,
+            tracker("right", 0.2, 0.0, 0.0),
+        ],
+    )
+
+    assert abs(old_yaw) > 20.0
+    assert estimate.feet["left"].skate_yaw_deg == pytest.approx(0.0, abs=0.001)
+    assert skate_world_yaw_deg(live_left, model.feet["left"]) == pytest.approx(
+        0.0,
+        abs=0.001,
+    )
 
 
 def test_nearly_lifted_grounded_foot_has_reduced_braking_load() -> None:

@@ -108,6 +108,9 @@ class SkatingEstimator:
         now: float,
         hmd_pose: HmdPose | None,
         trackers: list[TrackerPose],
+        *,
+        output_hmd_pose: HmdPose | None = None,
+        output_calibrated_yaw_deg: float | None = None,
     ) -> SkatingEstimate:
         model = self._model
         delta_s = (
@@ -121,6 +124,8 @@ class SkatingEstimator:
             self._damp_motion(delta_s, force=True)
             return self._estimate(
                 hmd_pose=hmd_pose,
+                output_hmd_pose=output_hmd_pose,
+                output_calibrated_yaw_deg=output_calibrated_yaw_deg,
                 trackers_ready=False,
                 trackers_visible=len(trackers),
                 grounded_feet=0,
@@ -128,7 +133,14 @@ class SkatingEstimator:
 
         known_trackers = [tracker for tracker in trackers if tracker.serial in model.feet]
         if len(known_trackers) < self._tracker_config.required_feet_count:
-            return self._handle_dropout(now, delta_s, hmd_pose, len(known_trackers))
+            return self._handle_dropout(
+                now,
+                delta_s,
+                hmd_pose,
+                len(known_trackers),
+                output_hmd_pose=output_hmd_pose,
+                output_calibrated_yaw_deg=output_calibrated_yaw_deg,
+            )
 
         self._state.dropout_started_at = None
         body_right_m, body_forward_m = to_calibrated_local(
@@ -271,6 +283,8 @@ class SkatingEstimator:
 
         return self._estimate(
             hmd_pose=hmd_pose,
+            output_hmd_pose=output_hmd_pose,
+            output_calibrated_yaw_deg=output_calibrated_yaw_deg,
             trackers_ready=True,
             trackers_visible=len(known_trackers),
             grounded_feet=grounded_feet,
@@ -282,6 +296,9 @@ class SkatingEstimator:
         delta_s: float,
         hmd_pose: HmdPose,
         visible_count: int,
+        *,
+        output_hmd_pose: HmdPose | None,
+        output_calibrated_yaw_deg: float | None,
     ) -> SkatingEstimate:
         if self._state.dropout_started_at is None:
             self._state.dropout_started_at = now
@@ -291,6 +308,8 @@ class SkatingEstimator:
         self._damp_motion(delta_s, force=force)
         return self._estimate(
             hmd_pose=hmd_pose,
+            output_hmd_pose=output_hmd_pose,
+            output_calibrated_yaw_deg=output_calibrated_yaw_deg,
             trackers_ready=False,
             trackers_visible=visible_count,
             grounded_feet=0,
@@ -299,24 +318,33 @@ class SkatingEstimator:
     def _estimate(
         self,
         hmd_pose: HmdPose | None,
+        output_hmd_pose: HmdPose | None,
+        output_calibrated_yaw_deg: float | None,
         trackers_ready: bool,
         trackers_visible: int,
         grounded_feet: int,
     ) -> SkatingEstimate:
         model = self._model
-        if model is None or hmd_pose is None:
+        axis_hmd_pose = output_hmd_pose or hmd_pose
+        if model is None or axis_hmd_pose is None:
             horizontal = 0.0
             vertical = 0.0
-            crouch_m = 0.0
         else:
-            hmd_yaw_deg = self._stable_hmd_yaw_deg(hmd_pose)
+            hmd_yaw_deg = self._stable_hmd_yaw_deg(axis_hmd_pose)
             horizontal, vertical = map_local_velocity_to_axes(
                 self._state.velocity_right_m_s,
                 self._state.velocity_forward_m_s,
                 hmd_yaw_deg,
-                model.yaw_deg,
+                (
+                    model.yaw_deg
+                    if output_calibrated_yaw_deg is None
+                    else output_calibrated_yaw_deg
+                ),
                 self._config.full_speed_m_s,
             )
+        if model is None or hmd_pose is None:
+            crouch_m = 0.0
+        else:
             crouch_m = max(0.0, model.standing_hmd_y_m - hmd_pose.position[1])
 
         speed_m_s = math.hypot(

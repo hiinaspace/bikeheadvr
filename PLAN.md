@@ -7,8 +7,8 @@ This file tracks the active prototype work. Stable design notes live in:
 
 ## Current Goal
 
-Make skating mode understandable and testable enough that frame changes can be
-made safely.
+Collect clean raw-frame skating recordings and use them with synthetic tests to
+debug contact, braking, and turn behavior.
 
 ## Active Hypotheses
 
@@ -17,17 +17,18 @@ made safely.
   push-gain tuning.
 - Chaperone yaw should not be enabled as a default until skating physics reads a
   frame that is independent of chaperone edits.
-- Raw OpenVR poses from `TrackingUniverseRawAndUncalibrated` are the likely
-  source of truth for skating physics.
+- Raw OpenVR poses from `TrackingUniverseRawAndUncalibrated` are now the source
+  of truth for skating physics and recordings.
+- Raw-frame contact Y is probably stable enough to test, but may need a
+  standing-up projection if live contact state looks wrong.
 
 ## Near-Term Tasks
 
-1. Prototype raw-tracking-frame pose reads in `vr_runtime` without changing
-   overlay placement.
-2. Route skating physics through raw poses while preserving standing-frame
-   overlays and VRChat/HMD joystick compensation.
-3. Add recording metadata for pose universe and frame transforms before
-   committing real recording fixtures.
+1. Record clean single-push and alternating-push samples with raw-frame metadata.
+2. Replay the new recordings and compare contact load, force, and touchdown
+   braking against expected motion.
+3. Decide whether hip tracker COM should replace HMD XZ for force/torque
+   leverage.
 4. Use the ghost debug overlays to compare COM, force, torque, and body yaw
    during live testing.
 5. Re-test chaperone yaw as a presentation transform only.
@@ -42,8 +43,10 @@ The estimator test suite now includes synthetic checks for:
 - rigid world yaw/translation invariance
 - hitched tracker frames not creating larger impulses than regular frames
 
-The next test gap is raw-frame plumbing: raw-vs-standing equivalence, explicit
-pose-universe serialization, and chaperone-yaw feedback isolation.
+Raw-frame plumbing now has tests for OpenVR universe selection, raw-to-standing
+yaw conversion, explicit pose-universe serialization, and separated
+physics/output axis frames. The next test gap is replay-backed regression from
+clean raw recordings.
 
 ## Useful Commands
 
@@ -68,7 +71,7 @@ no VRChat joystick motion and suppresses chaperone yaw:
 uv run bikeheadvr-cli --locomotion-mode skating --skating-record-only --skating-record-path recordings/skate-single-push-left
 ```
 
-Candidate committed fixtures should be short, segmented, include pose-universe
-metadata, and ideally capture one clean single push or one clean alternating
-push sequence. Older recordings are still useful for local replay, but many lack
-the newer segment/debug fields.
+Candidate committed fixtures should be short, segmented, include
+`pose_universe: raw` plus `raw_to_standing`, and ideally capture one clean
+single push or one clean alternating push sequence. Older recordings are still
+useful for local replay, but many lack the newer segment/debug fields.

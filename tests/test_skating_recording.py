@@ -143,7 +143,7 @@ def test_skating_recording_round_trips_and_replays() -> None:
     estimate = estimator.update(0.1, hmd(), pushing_feet)
     with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp_dir:
         path = Path(temp_dir) / "skating.jsonl"
-        writer = SkatingRecordingWriter(path, config)
+        writer = SkatingRecordingWriter(path, config, pose_universe="raw")
         segment_id = writer.start_segment(0.0, 10.0, model)
         writer.write_frame(
             relative_s=0.0,
@@ -160,6 +160,11 @@ def test_skating_recording_round_trips_and_replays() -> None:
                 device("left_controller", 1.1, 2, "Controller", 1, "LeftHand"),
             ],
             record_only=True,
+            raw_to_standing=(
+                (1.0, 0.0, 0.0, 0.1),
+                (0.0, 1.0, 0.0, 0.2),
+                (0.0, 0.0, 1.0, 0.3),
+            ),
         )
         writer.write_frame(
             relative_s=0.1,
@@ -176,11 +181,14 @@ def test_skating_recording_round_trips_and_replays() -> None:
 
         records = load_skating_records(path)
         assert records[0]["type"] == "meta"
+        assert records[0]["pose_universe"] == "raw"
         assert records[1]["type"] == "calibration"
         assert records[1]["segment_id"] == segment_id
         assert records[2]["segment_id"] == segment_id
         assert records[2]["segment_relative_s"] == 0.0
+        assert records[2]["pose_universe"] == "raw"
         assert records[2]["record_only"] is True
+        assert records[2]["raw_to_standing"][0] == [1.0, 0.0, 0.0, 0.1]
         assert records[2]["hmd"]["velocity_m_s"] == [0.1, 0.0, -0.2]
         assert records[2]["devices"][0]["serial"] == "hip"
         assert records[2]["devices"][1]["controller_role_name"] == "LeftHand"
@@ -201,6 +209,11 @@ def test_skating_recording_round_trips_and_replays() -> None:
             (0.0, 0.0, 1.0)
         )
         assert replay.samples[0].devices[0].serial == "hip"
+        assert replay.samples[0].raw_to_standing == (
+            (1.0, 0.0, 0.0, 0.1),
+            (0.0, 1.0, 0.0, 0.2),
+            (0.0, 0.0, 1.0, 0.3),
+        )
         assert replay.max_speed_m_s > 0.0
 
 

@@ -51,11 +51,15 @@ The skating physics can still use raw horizontal consistency, but contact
 height, overlay placement, and user-facing debug should be explicit about which
 up vector/frame they use.
 
+Current skating calibration, foot selection, foot velocities, skate yaw, contact
+load, force, torque, and JSONL pose recording use raw OpenVR poses.
+
 ### Standing/Chaperone Frame
 
-The SteamVR standing playspace frame. The app currently reads HMD and tracker
-poses in this frame. This is convenient for overlays, but if skating mode also
-modifies chaperone yaw, the sim risks reading through its own output transform.
+The SteamVR standing playspace frame. The app still reads HMD and tracker poses
+in this frame for gaze interaction, overlay placement, and VRChat-facing HMD
+axis compensation. Skating physics does not use standing-frame tracker poses as
+its source of truth.
 
 Base stations are exposed as `TrackedDeviceClass_TrackingReference`, but in
 `TrackingUniverseStanding` their reported poses are still in the current
@@ -94,6 +98,12 @@ yaw compensation and sent as:
 - `/input/Vertical`
 
 Skating mode does not currently send `/input/LookHorizontal`.
+
+Because skating velocity is simulated in raw-calibrated coordinates, the app
+uses SteamVR's raw-zero-to-standing transform to convert the calibrated forward
+yaw into the standing/HMD output frame before joystick compensation. If that
+transform is unavailable, it falls back to raw HMD yaw and raw calibration yaw so
+the estimator does not accidentally mix unrelated yaw frames.
 
 ## Physics Sketch
 
@@ -160,12 +170,18 @@ calibration:
 
 Recordings should remain local and are gitignored.
 
+Current skating recordings use `pose_universe: raw`. Frame records also include
+the current `raw_to_standing` 3x4 transform when SteamVR provides it.
+
 ## Known Limitations
 
-- Physics currently reads standing-frame poses, not raw tracking-frame poses.
+- Contact height/load currently uses raw-frame tracker Y. If raw Y differs
+  noticeably from standing gravity/up on a given SteamVR setup, contact may need
+  a separate standing-up or baseline-up projection.
 - COM is HMD XZ, not hip/weighted body center.
 - Contact load is inferred from tracker height and tilt, not true normal force.
 - Foot trackers do not provide force feedback, so passive braking requires
   generous slop.
-- Chaperone-yaw turning is experimental and should be tested after the raw-frame
-  input change.
+- Chaperone-yaw turning is still experimental. Physics is now insulated from
+  standing-frame yaw edits, but the output transform and turn feedback loop still
+  need live verification.

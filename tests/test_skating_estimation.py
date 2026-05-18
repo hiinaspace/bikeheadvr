@@ -911,6 +911,23 @@ def test_head_yaw_compensation_rotates_velocity_to_vrchat_axes() -> None:
     assert abs(vertical) < 0.001
 
 
+def test_output_frame_can_differ_from_physics_frame_for_axis_mapping() -> None:
+    estimator = calibrated_estimator()
+    warm_contact(estimator, default_feet())
+    estimator._state.velocity_forward_m_s = 1.0
+
+    estimate = estimator.update(
+        0.2,
+        hmd(0.0),
+        default_feet(),
+        output_hmd_pose=hmd(90.0),
+        output_calibrated_yaw_deg=90.0,
+    )
+
+    assert estimate.vertical > 0.0
+    assert abs(estimate.horizontal) < 0.001
+
+
 def test_dropout_damps_existing_velocity_after_grace() -> None:
     estimator = calibrated_estimator()
     warm_contact(estimator, default_feet())

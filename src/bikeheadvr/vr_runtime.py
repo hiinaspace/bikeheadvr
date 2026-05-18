@@ -84,6 +84,13 @@ class OverlayIntersection:
     distance: float
 
 
+Matrix34Rows = tuple[
+    tuple[float, float, float, float],
+    tuple[float, float, float, float],
+    tuple[float, float, float, float],
+]
+
+
 def _rotation_matrix_xyz(
     yaw_deg: float, pitch_deg: float, roll_deg: float
 ) -> list[list[float]]:
@@ -238,7 +245,13 @@ class SteamVROverlayRuntime:
             self._overlay_api.hideOverlay(overlay.value)
 
     def get_hmd_pose(self) -> HmdPose | None:
-        poses = self._get_all_poses()
+        return self._get_hmd_pose(_tracking_universe_origin("standing"))
+
+    def get_raw_hmd_pose(self) -> HmdPose | None:
+        return self._get_hmd_pose(_tracking_universe_origin("raw"))
+
+    def _get_hmd_pose(self, origin: int) -> HmdPose | None:
+        poses = self._get_all_poses(origin)
         if poses is None:
             return None
         hmd_pose = poses[openvr.k_unTrackedDeviceIndex_Hmd]
@@ -257,7 +270,13 @@ class SteamVROverlayRuntime:
         )
 
     def get_tracker_poses(self) -> list[TrackerPose]:
-        poses = self._get_all_poses()
+        return self._get_tracker_poses(_tracking_universe_origin("standing"))
+
+    def get_raw_tracker_poses(self) -> list[TrackerPose]:
+        return self._get_tracker_poses(_tracking_universe_origin("raw"))
+
+    def _get_tracker_poses(self, origin: int) -> list[TrackerPose]:
+        poses = self._get_all_poses(origin)
         if poses is None or self._system is None:
             return []
 
@@ -287,7 +306,24 @@ class SteamVROverlayRuntime:
         return tracker_poses
 
     def get_device_poses(self, include_hmd: bool = False) -> list[DevicePose]:
-        poses = self._get_all_poses()
+        return self._get_device_poses(
+            _tracking_universe_origin("standing"),
+            include_hmd=include_hmd,
+        )
+
+    def get_raw_device_poses(self, include_hmd: bool = False) -> list[DevicePose]:
+        return self._get_device_poses(
+            _tracking_universe_origin("raw"),
+            include_hmd=include_hmd,
+        )
+
+    def _get_device_poses(
+        self,
+        origin: int,
+        *,
+        include_hmd: bool = False,
+    ) -> list[DevicePose]:
+        poses = self._get_all_poses(origin)
         if poses is None or self._system is None:
             return []
 
@@ -324,17 +360,45 @@ class SteamVROverlayRuntime:
 
     def _get_all_poses(
         self,
+        origin: int = openvr.TrackingUniverseStanding,
     ) -> tuple[openvr.TrackedDevicePose_t, ...] | None:
         if self._system is None:
             raise RuntimeError("OpenVR system is not initialized")
 
         poses = (openvr.TrackedDevicePose_t * openvr.k_unMaxTrackedDeviceCount)()
         poses = self._system.getDeviceToAbsoluteTrackingPose(
-            openvr.TrackingUniverseStanding,
+            origin,
             0.0,
             poses,
         )
         return tuple(poses)
+
+    def raw_yaw_to_standing_yaw(self, yaw_deg: float) -> float | None:
+        matrix = self.get_raw_zero_to_standing_transform()
+        if matrix is None:
+            return None
+        forward_raw = _forward_vector_from_yaw(yaw_deg)
+        forward_standing = _matvec3(
+            [list(row[:3]) for row in matrix],
+            forward_raw,
+        )
+        horizontal_magnitude = math.hypot(forward_standing[0], forward_standing[2])
+        if horizontal_magnitude < 0.001:
+            return None
+        return _yaw_from_forward_vector(forward_standing)
+
+    def get_raw_zero_to_standing_transform(self) -> Matrix34Rows | None:
+        if self._system is None:
+            raise RuntimeError("OpenVR system is not initialized")
+        try:
+            matrix = self._system.getRawZeroPoseToStandingAbsoluteTrackingPose()
+        except OpenVRError:
+            LOGGER.debug(
+                "Failed to read raw-to-standing transform",
+                exc_info=True,
+            )
+            return None
+        return _matrix34_rows(matrix)
 
     def get_hmd_gaze_ray(self) -> GazeRay | None:
         hmd_pose = self.get_hmd_pose()
@@ -577,12 +641,37 @@ def _controller_role_name(role: int) -> str:
     return names.get(role, f"Unknown{role}")
 
 
+def _tracking_universe_origin(name: str) -> int:
+    if name == "standing":
+        return openvr.TrackingUniverseStanding
+    if name == "raw":
+        return openvr.TrackingUniverseRawAndUncalibrated
+    raise ValueError(f"Unknown tracking universe: {name}")
+
+
+def _forward_vector_from_yaw(yaw_deg: float) -> tuple[float, float, float]:
+    yaw_rad = math.radians(yaw_deg)
+    return (-math.sin(yaw_rad), 0.0, -math.cos(yaw_rad))
+
+
+def _yaw_from_forward_vector(vector: tuple[float, float, float]) -> float:
+    return math.degrees(math.atan2(-vector[0], -vector[2]))
+
+
 def _copy_hmd_matrix34(matrix: openvr.HmdMatrix34_t) -> openvr.HmdMatrix34_t:
     copied = openvr.HmdMatrix34_t()
     for row_idx in range(3):
         for col_idx in range(4):
             copied.m[row_idx][col_idx] = matrix.m[row_idx][col_idx]
     return copied
+
+
+def _matrix34_rows(matrix: openvr.HmdMatrix34_t) -> Matrix34Rows:
+    return (
+        (matrix.m[0][0], matrix.m[0][1], matrix.m[0][2], matrix.m[0][3]),
+        (matrix.m[1][0], matrix.m[1][1], matrix.m[1][2], matrix.m[1][3]),
+        (matrix.m[2][0], matrix.m[2][1], matrix.m[2][2], matrix.m[2][3]),
+    )
 
 
 def _extract_hmd_matrix34(value: object) -> openvr.HmdMatrix34_t | None:

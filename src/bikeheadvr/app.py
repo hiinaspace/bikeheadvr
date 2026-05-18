@@ -230,6 +230,7 @@ def run_session(
         skating_recorder = SkatingRecordingWriter(
             options.skating_record_path,
             config.skating,
+            pose_universe="raw",
         )
         publish("info", f"Recording skating poses to {skating_recorder.path}")
     elif options.skating_record_path is not None:
@@ -355,9 +356,16 @@ def run_session(
             last_frame_at = now
             hmd_pose = runtime.get_hmd_pose()
             tracker_poses = runtime.get_tracker_poses()
+            skating_hmd_pose = hmd_pose
+            skating_tracker_poses = tracker_poses
+            if _is_skating_mode(config):
+                skating_hmd_pose = runtime.get_raw_hmd_pose()
+                skating_tracker_poses = runtime.get_raw_tracker_poses()
             device_poses: list[DevicePose] = []
+            raw_to_standing = None
             if skating_recorder is not None and _is_skating_mode(config):
-                device_poses = runtime.get_device_poses()
+                device_poses = runtime.get_raw_device_poses()
+                raw_to_standing = runtime.get_raw_zero_to_standing_transform()
             gaze_ray = _to_gaze_ray(hmd_pose)
             if hmd_pose is None:
                 if no_pose_started_at is None:
@@ -387,11 +395,18 @@ def run_session(
                 tracker_poses,
                 config.tracker.required_feet_count,
             )
+            selected_skating_trackers = infer_foot_trackers(
+                skating_tracker_poses,
+                config.tracker.required_feet_count,
+            )
+            calibration_pose = (
+                skating_hmd_pose if _is_skating_mode(config) else hmd_pose
+            )
 
             calibration_status = calibration.update(
                 now,
-                _yaw_from_pose(hmd_pose),
-                _position_xz_from_pose(hmd_pose),
+                _yaw_from_pose(calibration_pose),
+                _position_xz_from_pose(calibration_pose),
             )
             if calibration_status.completed_pose is not None:
                 calibrated_center_x_m = calibration_status.completed_pose.x_m
@@ -408,13 +423,13 @@ def run_session(
                 if _is_skating_mode(config):
                     skating_model = (
                         None
-                        if hmd_pose is None
+                        if skating_hmd_pose is None
                         else build_skating_calibration(
                             calibrated_center_x_m,
                             calibrated_center_z_m,
                             calibrated_yaw_deg,
-                            hmd_pose,
-                            selected_trackers,
+                            skating_hmd_pose,
+                            selected_skating_trackers,
                             config.tracker.required_feet_count,
                         )
                     )
@@ -586,13 +601,23 @@ def run_session(
                 pedal_calibration_status.active or calibration_status.active
             )
             if _is_skating_mode(config):
+                skating_output_hmd_pose, skating_output_yaw_deg = (
+                    _skating_output_frame(
+                        runtime,
+                        skating_estimator.calibration,
+                        hmd_pose,
+                        skating_hmd_pose,
+                    )
+                )
                 skating_estimate = _update_skating_drive(
                     skating_estimator,
                     now,
-                    hmd_pose,
-                    selected_trackers,
+                    skating_hmd_pose,
+                    selected_skating_trackers,
                     controls_visible,
                     calibration_status.active,
+                    output_hmd_pose=skating_output_hmd_pose,
+                    output_calibrated_yaw_deg=skating_output_yaw_deg,
                 )
                 osc.clear_turn()
                 if options.skating_record_only:
@@ -611,7 +636,7 @@ def run_session(
                     skating_foot_texture_cache,
                     skating_estimator.calibration,
                     skating_estimate,
-                    selected_trackers,
+                    tracker_poses,
                     controls_visible and not calibration_status.active,
                 )
                 _update_skating_debug_overlays(
@@ -622,7 +647,7 @@ def run_session(
                     skating_estimator.calibration,
                     skating_estimate,
                     hmd_pose,
-                    selected_trackers,
+                    tracker_poses,
                     controls_visible and not calibration_status.active,
                 )
                 if (
@@ -711,15 +736,16 @@ def run_session(
                     skating_recorder.write_frame(
                         relative_s=now - session_started_at,
                         monotonic_s=now,
-                        hmd_pose=hmd_pose,
-                        trackers=tracker_poses,
+                        hmd_pose=skating_hmd_pose,
+                        trackers=skating_tracker_poses,
                         devices=device_poses,
-                        selected_trackers=selected_trackers,
+                        selected_trackers=selected_skating_trackers,
                         calibration=skating_estimator.calibration,
                         estimate=skating_estimate,
                         controls_visible=controls_visible,
                         calibration_active=calibration_status.active,
                         record_only=options.skating_record_only,
+                        raw_to_standing=raw_to_standing,
                     )
                 except OSError:
                     LOGGER.warning("Failed to write skating recording", exc_info=True)
@@ -1104,11 +1130,34 @@ def _update_skating_drive(
     trackers: list[TrackerPose],
     controls_visible: bool,
     calibration_active: bool,
+    *,
+    output_hmd_pose: HmdPose | None = None,
+    output_calibrated_yaw_deg: float | None = None,
 ) -> SkatingEstimate:
     if not controls_visible or calibration_active:
         skating_estimator.reset()
         return SkatingEstimate(trackers_visible=len(trackers))
-    return skating_estimator.update(now, hmd_pose, trackers)
+    return skating_estimator.update(
+        now,
+        hmd_pose,
+        trackers,
+        output_hmd_pose=output_hmd_pose,
+        output_calibrated_yaw_deg=output_calibrated_yaw_deg,
+    )
+
+
+def _skating_output_frame(
+    runtime: SteamVROverlayRuntime,
+    model: SkatingCalibrationModel | None,
+    standing_hmd_pose: HmdPose | None,
+    raw_hmd_pose: HmdPose | None,
+) -> tuple[HmdPose | None, float | None]:
+    if model is None or standing_hmd_pose is None:
+        return raw_hmd_pose, None
+    output_yaw_deg = runtime.raw_yaw_to_standing_yaw(model.yaw_deg)
+    if output_yaw_deg is None:
+        return raw_hmd_pose, None
+    return standing_hmd_pose, output_yaw_deg
 
 
 def _apply_skating_motion(

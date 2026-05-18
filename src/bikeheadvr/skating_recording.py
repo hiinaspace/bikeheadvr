@@ -12,7 +12,7 @@ from .skating_estimation import (
     SkatingEstimate,
     SkatingEstimator,
 )
-from .vr_runtime import DevicePose, HmdPose, TrackerPose
+from .vr_runtime import DevicePose, HmdPose, Matrix34Rows, TrackerPose
 
 
 @dataclass(frozen=True)
@@ -23,6 +23,7 @@ class SkatingReplaySample:
     hmd_pose: HmdPose
     trackers: list[TrackerPose]
     devices: list[DevicePose]
+    raw_to_standing: Matrix34Rows | None
     estimate: SkatingEstimate
     recorded_estimate: SkatingEstimate | None
 
@@ -49,8 +50,15 @@ class SkatingReplayResult:
 
 
 class SkatingRecordingWriter:
-    def __init__(self, path: Path, config: SkatingConfig) -> None:
+    def __init__(
+        self,
+        path: Path,
+        config: SkatingConfig,
+        *,
+        pose_universe: str = "standing",
+    ) -> None:
         self._path = resolve_skating_recording_path(path)
+        self._pose_universe = pose_universe
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._file = self._path.open("w", encoding="utf-8")
         self._next_segment_id = 1
@@ -60,6 +68,7 @@ class SkatingRecordingWriter:
             {
                 "type": "meta",
                 "format": "bikeheadvr.skating_recording.v1",
+                "pose_universe": self._pose_universe,
                 "skating_config": _skating_config_to_dict(config),
             }
         )
@@ -122,6 +131,7 @@ class SkatingRecordingWriter:
         calibration_active: bool,
         devices: list[DevicePose] | None = None,
         record_only: bool = False,
+        raw_to_standing: Matrix34Rows | None = None,
     ) -> None:
         segment_relative_s = (
             None
@@ -138,6 +148,8 @@ class SkatingRecordingWriter:
                 "controls_visible": controls_visible,
                 "calibration_active": calibration_active,
                 "record_only": record_only,
+                "pose_universe": self._pose_universe,
+                "raw_to_standing": matrix34_rows_to_dict(raw_to_standing),
                 "hmd": None if hmd_pose is None else hmd_pose_to_dict(hmd_pose),
                 "trackers": [tracker_pose_to_dict(tracker) for tracker in trackers],
                 "devices": [
@@ -200,6 +212,7 @@ def replay_skating_recording(
             for device in record.get("devices", [])
             if isinstance(device, dict)
         ]
+        raw_to_standing = matrix34_rows_from_dict(record.get("raw_to_standing"))
         selected_serials = set(record.get("selected_tracker_serials", []))
         selected_trackers = [
             tracker for tracker in trackers if tracker.serial in selected_serials
@@ -227,6 +240,7 @@ def replay_skating_recording(
                 hmd_pose=hmd_pose,
                 trackers=selected_trackers,
                 devices=devices,
+                raw_to_standing=raw_to_standing,
                 estimate=estimate,
                 recorded_estimate=recorded_estimate,
             )
@@ -341,6 +355,22 @@ def device_pose_from_dict(raw: dict[str, Any]) -> DevicePose:
         angular_velocity_rad_s=_tuple3(
             raw.get("angular_velocity_rad_s", (0.0, 0.0, 0.0))
         ),
+    )
+
+
+def matrix34_rows_to_dict(matrix: Matrix34Rows | None) -> list[list[float]] | None:
+    if matrix is None:
+        return None
+    return [list(row) for row in matrix]
+
+
+def matrix34_rows_from_dict(raw: Any) -> Matrix34Rows | None:
+    if raw is None:
+        return None
+    return (
+        _tuple4(raw[0]),
+        _tuple4(raw[1]),
+        _tuple4(raw[2]),
     )
 
 
@@ -466,6 +496,10 @@ def _skating_config_to_dict(config: SkatingConfig) -> dict[str, Any]:
 
 def _tuple3(raw: Any) -> tuple[float, float, float]:
     return (float(raw[0]), float(raw[1]), float(raw[2]))
+
+
+def _tuple4(raw: Any) -> tuple[float, float, float, float]:
+    return (float(raw[0]), float(raw[1]), float(raw[2]), float(raw[3]))
 
 
 def _optional_float(raw: Any) -> float | None:

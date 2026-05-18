@@ -45,6 +45,12 @@ truth for skating physics because it is not affected by chaperone yaw.
 
 OpenVR exposes this through `TrackingUniverseRawAndUncalibrated`.
 
+Raw tracking is not necessarily a user-friendly playspace frame. In particular,
+its vertical axis may not exactly match calibrated standing-space gravity/up.
+The skating physics can still use raw horizontal consistency, but contact
+height, overlay placement, and user-facing debug should be explicit about which
+up vector/frame they use.
+
 ### Standing/Chaperone Frame
 
 The SteamVR standing playspace frame. The app currently reads HMD and tracker

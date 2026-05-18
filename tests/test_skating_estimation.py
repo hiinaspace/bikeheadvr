@@ -125,6 +125,72 @@ def heading_local_tracker(
     )
 
 
+def transformed_hmd(
+    right_m: float,
+    forward_m: float,
+    heading_yaw_deg: float,
+    *,
+    x_offset_m: float,
+    z_offset_m: float,
+    local_yaw_deg: float = 0.0,
+) -> HmdPose:
+    x_m, z_m = transformed_xz(
+        right_m,
+        forward_m,
+        heading_yaw_deg,
+        x_offset_m=x_offset_m,
+        z_offset_m=z_offset_m,
+    )
+    yaw_deg = heading_yaw_deg + local_yaw_deg
+    yaw_rad = math.radians(yaw_deg)
+    return HmdPose(
+        position=(x_m, 1.7, z_m),
+        direction=(-math.sin(yaw_rad), 0.0, -math.cos(yaw_rad)),
+    )
+
+
+def transformed_tracker(
+    serial: str,
+    right_m: float,
+    y_m: float,
+    forward_m: float,
+    heading_yaw_deg: float,
+    foot_yaw_deg: float,
+    device_index: int,
+    *,
+    x_offset_m: float,
+    z_offset_m: float,
+) -> TrackerPose:
+    x_m, z_m = transformed_xz(
+        right_m,
+        forward_m,
+        heading_yaw_deg,
+        x_offset_m=x_offset_m,
+        z_offset_m=z_offset_m,
+    )
+    return TrackerPose(
+        device_index=device_index,
+        serial=serial,
+        position=(x_m, y_m, z_m),
+        orientation=orientation_from_yaw(heading_yaw_deg + foot_yaw_deg),
+    )
+
+
+def transformed_xz(
+    right_m: float,
+    forward_m: float,
+    yaw_deg: float,
+    *,
+    x_offset_m: float,
+    z_offset_m: float,
+) -> tuple[float, float]:
+    yaw_rad = math.radians(yaw_deg)
+    return (
+        x_offset_m + right_m * math.cos(yaw_rad) - forward_m * math.sin(yaw_rad),
+        z_offset_m - right_m * math.sin(yaw_rad) - forward_m * math.cos(yaw_rad),
+    )
+
+
 def default_feet(yaw_deg: float = 0.0) -> list[TrackerPose]:
     return [
         tracker("left", -0.2, 0.0, 0.0, yaw_deg, 1),
@@ -401,6 +467,202 @@ def test_yawed_skates_with_right_shifted_com_create_turning_force_and_torque() -
     assert estimate.yaw_rate_deg_s < 0.0
     assert estimate.body_yaw_deg < 0.0
     assert sum(foot.torque for foot in estimate.feet.values()) < 0.0
+
+
+def test_skating_estimator_is_invariant_to_rigid_world_yaw_and_translation() -> None:
+    config = SkatingConfig(
+        coast_drag_per_s=0.0,
+        longitudinal_drag_per_s=0.1,
+        lateral_drag_per_s=5.0,
+        angular_drag_per_s=0.0,
+        torque_gain_per_s=5.0,
+        dropout_grace_s=0.2,
+        dropout_fall_s=0.5,
+        push_yaw_gain=1.0,
+        passive_brake_min_scale=1.0,
+        landing_brake_min_scale=1.0,
+    )
+    heading_yaw_deg = 37.0
+    x_offset_m = 1.4
+    z_offset_m = -0.8
+
+    base_feet = default_feet()
+    transformed_feet = [
+        transformed_tracker(
+            "left",
+            -0.2,
+            0.0,
+            0.0,
+            heading_yaw_deg,
+            0.0,
+            1,
+            x_offset_m=x_offset_m,
+            z_offset_m=z_offset_m,
+        ),
+        transformed_tracker(
+            "right",
+            0.2,
+            0.0,
+            0.0,
+            heading_yaw_deg,
+            0.0,
+            2,
+            x_offset_m=x_offset_m,
+            z_offset_m=z_offset_m,
+        ),
+    ]
+    transformed_center = transformed_xz(
+        0.0,
+        0.0,
+        heading_yaw_deg,
+        x_offset_m=x_offset_m,
+        z_offset_m=z_offset_m,
+    )
+    transformed_calibration = build_skating_calibration(
+        transformed_center[0],
+        transformed_center[1],
+        heading_yaw_deg,
+        transformed_hmd(
+            0.0,
+            0.0,
+            heading_yaw_deg,
+            x_offset_m=x_offset_m,
+            z_offset_m=z_offset_m,
+        ),
+        transformed_feet,
+        2,
+    )
+    assert transformed_calibration is not None
+
+    base = calibrated_estimator(config=config, feet=base_feet)
+    transformed = SkatingEstimator(TrackerConfig(required_feet_count=2), config)
+    transformed.apply_calibration(transformed_calibration)
+    warm_contact(base, base_feet)
+    transformed.update(
+        0.0,
+        transformed_hmd(
+            0.0,
+            0.0,
+            heading_yaw_deg,
+            x_offset_m=x_offset_m,
+            z_offset_m=z_offset_m,
+        ),
+        transformed_feet,
+    )
+    transformed.update(
+        0.1,
+        transformed_hmd(
+            0.0,
+            0.0,
+            heading_yaw_deg,
+            x_offset_m=x_offset_m,
+            z_offset_m=z_offset_m,
+        ),
+        transformed_feet,
+    )
+    base._state.velocity_forward_m_s = 1.0
+    transformed._state.velocity_forward_m_s = 1.0
+
+    base_turning_feet = [
+        tracker("left", -0.2, 0.0, 0.0, 25.0),
+        tracker("right", 0.2, 0.0, 0.0, 25.0),
+    ]
+    transformed_turning_feet = [
+        transformed_tracker(
+            "left",
+            -0.2,
+            0.0,
+            0.0,
+            heading_yaw_deg,
+            25.0,
+            1,
+            x_offset_m=x_offset_m,
+            z_offset_m=z_offset_m,
+        ),
+        transformed_tracker(
+            "right",
+            0.2,
+            0.0,
+            0.0,
+            heading_yaw_deg,
+            25.0,
+            2,
+            x_offset_m=x_offset_m,
+            z_offset_m=z_offset_m,
+        ),
+    ]
+
+    base_estimate = base.update(0.2, hmd_at(0.3, 0.0), base_turning_feet)
+    transformed_estimate = transformed.update(
+        0.2,
+        transformed_hmd(
+            0.3,
+            0.0,
+            heading_yaw_deg,
+            x_offset_m=x_offset_m,
+            z_offset_m=z_offset_m,
+        ),
+        transformed_turning_feet,
+    )
+
+    assert transformed_estimate.velocity_right_m_s == pytest.approx(
+        base_estimate.velocity_right_m_s
+    )
+    assert transformed_estimate.velocity_forward_m_s == pytest.approx(
+        base_estimate.velocity_forward_m_s
+    )
+    assert transformed_estimate.yaw_rate_deg_s == pytest.approx(
+        base_estimate.yaw_rate_deg_s
+    )
+    assert transformed_estimate.body_yaw_deg == pytest.approx(
+        base_estimate.body_yaw_deg
+    )
+    assert transformed_estimate.horizontal == pytest.approx(base_estimate.horizontal)
+    assert transformed_estimate.vertical == pytest.approx(base_estimate.vertical)
+    for serial in ("left", "right"):
+        assert transformed_estimate.feet[serial].skate_yaw_deg == pytest.approx(
+            base_estimate.feet[serial].skate_yaw_deg
+        )
+        assert transformed_estimate.feet[serial].force_right_m_s2 == pytest.approx(
+            base_estimate.feet[serial].force_right_m_s2
+        )
+        assert transformed_estimate.feet[serial].force_forward_m_s2 == pytest.approx(
+            base_estimate.feet[serial].force_forward_m_s2
+        )
+        assert transformed_estimate.feet[serial].torque == pytest.approx(
+            base_estimate.feet[serial].torque
+        )
+
+
+def test_hitched_tracker_frame_does_not_create_larger_push_than_regular_frames() -> None:
+    config = config_for_tests()
+    regular = calibrated_estimator(config=config)
+    hitched = calibrated_estimator(config=config)
+    warm_contact(regular, default_feet())
+    warm_contact(hitched, default_feet())
+
+    for index, foot_forward_m in enumerate((-0.04, -0.08, -0.12, -0.16, -0.2), start=1):
+        regular_estimate = regular.update(
+            0.1 + index * 0.05,
+            hmd(),
+            [
+                tracker("left", -0.2, 0.0, foot_forward_m, 90.0),
+                tracker("right", 0.2, 0.2, 0.0),
+            ],
+        )
+    hitched_estimate = hitched.update(
+        0.35,
+        hmd(),
+        [
+            tracker("left", -0.2, 0.0, -0.2, 90.0),
+            tracker("right", 0.2, 0.2, 0.0),
+        ],
+    )
+
+    assert (
+        hitched_estimate.velocity_forward_m_s
+        <= regular_estimate.velocity_forward_m_s * 1.1
+    )
 
 
 def test_push_after_physical_turn_uses_fixed_tracking_space() -> None:

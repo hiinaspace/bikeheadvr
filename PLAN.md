@@ -22,15 +22,28 @@ made safely.
 
 ## Near-Term Tasks
 
-1. Add deterministic estimator tests for ideal straight skating, push-off, and
-   skating into a turn.
-2. Use the ghost debug overlays to compare COM, force, torque, and body yaw
-   during live testing.
-3. Prototype raw-tracking-frame pose reads in `vr_runtime` without changing
+1. Prototype raw-tracking-frame pose reads in `vr_runtime` without changing
    overlay placement.
-4. Route skating physics through raw poses while preserving standing-frame
+2. Route skating physics through raw poses while preserving standing-frame
    overlays and VRChat/HMD joystick compensation.
+3. Add recording metadata for pose universe and frame transforms before
+   committing real recording fixtures.
+4. Use the ghost debug overlays to compare COM, force, torque, and body yaw
+   during live testing.
 5. Re-test chaperone yaw as a presentation transform only.
+
+## Regression Tests
+
+The estimator test suite now includes synthetic checks for:
+
+- aligned straight coasting
+- idealized push-off
+- yawed skates plus shifted COM producing lateral force and torque
+- rigid world yaw/translation invariance
+- hitched tracker frames not creating larger impulses than regular frames
+
+The next test gap is raw-frame plumbing: raw-vs-standing equivalence, explicit
+pose-universe serialization, and chaperone-yaw feedback isolation.
 
 ## Useful Commands
 
@@ -46,3 +59,8 @@ uv run python scripts\replay_skating_recording.py recordings\<file>.jsonl
 Use `--skating-record-path recordings/<template>` without a `.jsonl` suffix.
 The app will append a timestamp. Current recordings are local test artifacts and
 are not committed.
+
+Candidate committed fixtures should be short, segmented, include pose-universe
+metadata, and ideally capture one clean single push or one clean alternating
+push sequence. Older recordings are still useful for local replay, but many lack
+the newer segment/debug fields.

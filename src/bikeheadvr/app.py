@@ -61,6 +61,7 @@ class RuntimeOptions:
     locomotion_mode: str = "manual"
     pedal_calibration: bool = False
     skating_playspace_turn: bool = False
+    skating_record_only: bool = False
     skating_record_path: Path | None = None
     skating_push_yaw_gain: float | None = None
     skating_tracker_velocity_blend: float | None = None
@@ -123,6 +124,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--pedal-calibration", action="store_true")
     parser.add_argument("--skating-playspace-turn", action="store_true")
     parser.add_argument("--no-skating-playspace-turn", action="store_true")
+    parser.add_argument(
+        "--skating-record-only",
+        action="store_true",
+        help="Run skating estimation and recording without sending VRChat motion or chaperone yaw.",
+    )
     parser.add_argument("--skating-record-path", type=Path)
     parser.add_argument("--skating-push-yaw-gain", type=float)
     parser.add_argument("--skating-tracker-velocity-blend", type=float)
@@ -589,12 +595,15 @@ def run_session(
                     calibration_status.active,
                 )
                 osc.clear_turn()
-                _apply_skating_motion(
-                    osc,
-                    skating_estimate,
-                    controls_visible,
-                    calibration_status.active,
-                )
+                if options.skating_record_only:
+                    osc.clear_motion()
+                else:
+                    _apply_skating_motion(
+                        osc,
+                        skating_estimate,
+                        controls_visible,
+                        calibration_status.active,
+                    )
                 _update_skating_foot_overlays(
                     runtime,
                     config,
@@ -618,6 +627,7 @@ def run_session(
                 )
                 if (
                     options.skating_playspace_turn
+                    and not options.skating_record_only
                     and controls_visible
                     and hmd_pose is not None
                     and not calibration_status.active
@@ -709,6 +719,7 @@ def run_session(
                         estimate=skating_estimate,
                         controls_visible=controls_visible,
                         calibration_active=calibration_status.active,
+                        record_only=options.skating_record_only,
                     )
                 except OSError:
                     LOGGER.warning("Failed to write skating recording", exc_info=True)
@@ -752,6 +763,7 @@ def cli_main(argv: list[str] | None = None) -> int:
             args.skating_playspace_turn
             and not args.no_skating_playspace_turn
         ),
+        skating_record_only=args.skating_record_only,
         skating_record_path=args.skating_record_path,
         skating_push_yaw_gain=args.skating_push_yaw_gain,
         skating_tracker_velocity_blend=args.skating_tracker_velocity_blend,

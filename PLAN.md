@@ -60,6 +60,14 @@ Use `--skating-record-path recordings/<template>` without a `.jsonl` suffix.
 The app will append a timestamp. Current recordings are local test artifacts and
 are not committed.
 
+For pure motion-capture samples, add `--skating-record-only`. This keeps
+calibration, estimation, debug overlays, and JSONL recording active, but sends
+no VRChat joystick motion and suppresses chaperone yaw:
+
+```powershell
+uv run bikeheadvr-cli --locomotion-mode skating --skating-record-only --skating-record-path recordings/skate-single-push-left
+```
+
 Candidate committed fixtures should be short, segmented, include pose-universe
 metadata, and ideally capture one clean single push or one clean alternating
 push sequence. Older recordings are still useful for local replay, but many lack

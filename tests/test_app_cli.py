@@ -21,6 +21,7 @@ def test_parse_skating_mode_options() -> None:
             "skating",
             "--skating-playspace-turn",
             "--no-skating-playspace-turn",
+            "--skating-record-only",
             "--skating-record-path",
             "skate.jsonl",
             "--skating-push-yaw-gain",
@@ -39,6 +40,7 @@ def test_parse_skating_mode_options() -> None:
     assert args.locomotion_mode == "skating"
     assert args.skating_playspace_turn is True
     assert args.no_skating_playspace_turn is True
+    assert args.skating_record_only is True
     assert args.skating_record_path == Path("skate.jsonl")
     assert args.skating_push_yaw_gain == 3.0
     assert args.skating_tracker_velocity_blend == 0.5
@@ -51,6 +53,7 @@ def test_runtime_options_default_to_skating_playspace_turn_disabled() -> None:
     options = RuntimeOptions(locomotion_mode="skating")
 
     assert options.skating_playspace_turn is False
+    assert options.skating_record_only is False
 
 
 def test_runtime_options_apply_skating_tuning_overrides() -> None:

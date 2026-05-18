@@ -121,6 +121,7 @@ class SkatingRecordingWriter:
         controls_visible: bool,
         calibration_active: bool,
         devices: list[DevicePose] | None = None,
+        record_only: bool = False,
     ) -> None:
         segment_relative_s = (
             None
@@ -136,6 +137,7 @@ class SkatingRecordingWriter:
                 "monotonic_s": monotonic_s,
                 "controls_visible": controls_visible,
                 "calibration_active": calibration_active,
+                "record_only": record_only,
                 "hmd": None if hmd_pose is None else hmd_pose_to_dict(hmd_pose),
                 "trackers": [tracker_pose_to_dict(tracker) for tracker in trackers],
                 "devices": [

@@ -159,6 +159,7 @@ def test_skating_recording_round_trips_and_replays() -> None:
                 device("hip", 0.9),
                 device("left_controller", 1.1, 2, "Controller", 1, "LeftHand"),
             ],
+            record_only=True,
         )
         writer.write_frame(
             relative_s=0.1,
@@ -179,10 +180,12 @@ def test_skating_recording_round_trips_and_replays() -> None:
         assert records[1]["segment_id"] == segment_id
         assert records[2]["segment_id"] == segment_id
         assert records[2]["segment_relative_s"] == 0.0
+        assert records[2]["record_only"] is True
         assert records[2]["hmd"]["velocity_m_s"] == [0.1, 0.0, -0.2]
         assert records[2]["devices"][0]["serial"] == "hip"
         assert records[2]["devices"][1]["controller_role_name"] == "LeftHand"
         assert records[3]["segment_relative_s"] == 0.1
+        assert records[3]["record_only"] is False
         assert records[3]["trackers"][0]["velocity_m_s"] == [0.0, 0.0, 1.0]
         assert load_skating_config_from_recording(path) == config
 

@@ -139,6 +139,147 @@ def build_button_texture(
     )
 
 
+def build_skate_foot_texture(
+    width_px: int,
+    height_px: int,
+    side: str,
+    grounded: bool,
+    contact_load: float = 1.0,
+) -> OverlayTexture:
+    image = Image.new("RGBA", (width_px, height_px), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default()
+
+    if grounded and contact_load >= 0.6:
+        fill = (20, 112, 63, 122)
+        outline = (87, 255, 151, 245)
+        axis = (235, 255, 242, 255)
+    elif grounded:
+        fill = (113, 81, 20, 116)
+        outline = (255, 205, 87, 235)
+        axis = (255, 244, 211, 245)
+    else:
+        fill = (36, 61, 96, 96)
+        outline = (111, 180, 255, 220)
+        axis = (214, 232, 255, 235)
+
+    pad_x = 18
+    pad_y = 28
+    body = (pad_x, pad_y, width_px - pad_x, height_px - pad_y)
+    draw.rounded_rectangle(body, radius=22, fill=fill, outline=outline, width=8)
+
+    center_y = height_px // 2
+    draw.line((42, center_y, width_px - 42, center_y), fill=axis, width=7)
+    draw.polygon(
+        (
+            (width_px - 38, center_y),
+            (width_px - 76, center_y - 20),
+            (width_px - 76, center_y + 20),
+        ),
+        fill=axis,
+    )
+
+    for x in (width_px * 0.28, width_px * 0.72):
+        draw.line((x, pad_y + 12, x, height_px - pad_y - 12), fill=outline, width=4)
+
+    label = side[:1].upper()
+    draw.text(
+        (24, 16),
+        label,
+        font=font,
+        fill=axis,
+    )
+    state = f"{int(round(max(0.0, min(1.0, contact_load)) * 100)):02d}" if grounded else "A"
+    state_bbox = draw.textbbox((0, 0), state, font=font)
+    draw.text(
+        (width_px - (state_bbox[2] - state_bbox[0]) - 24, 16),
+        state,
+        font=font,
+        fill=axis,
+    )
+
+    return OverlayTexture(
+        width_px=width_px,
+        height_px=height_px,
+        rgba_bytes=image.tobytes("raw", "RGBA"),
+    )
+
+
+def build_debug_marker_texture(
+    width_px: int,
+    height_px: int,
+    color: tuple[int, int, int, int],
+) -> OverlayTexture:
+    image = Image.new("RGBA", (width_px, height_px), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    pad = max(6, min(width_px, height_px) // 8)
+    bounds = (pad, pad, width_px - pad, height_px - pad)
+    fill = (color[0], color[1], color[2], max(48, color[3] // 3))
+    draw.ellipse(bounds, fill=fill, outline=color, width=max(3, pad // 2))
+    cx = width_px // 2
+    cy = height_px // 2
+    draw.line((cx, pad * 2, cx, height_px - pad * 2), fill=color, width=3)
+    draw.line((pad * 2, cy, width_px - pad * 2, cy), fill=color, width=3)
+    return OverlayTexture(width_px, height_px, image.tobytes("raw", "RGBA"))
+
+
+def build_debug_arrow_texture(
+    width_px: int,
+    height_px: int,
+    color: tuple[int, int, int, int],
+    *,
+    arrow_head: bool = True,
+) -> OverlayTexture:
+    image = Image.new("RGBA", (width_px, height_px), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    center_y = height_px // 2
+    start_x = max(8, width_px // 12)
+    end_x = width_px - start_x
+    line_width = max(4, height_px // 7)
+    draw.line((start_x, center_y, end_x, center_y), fill=color, width=line_width)
+    if arrow_head:
+        head = max(12, height_px // 3)
+        draw.polygon(
+            (
+                (end_x, center_y),
+                (end_x - head, center_y - head // 2),
+                (end_x - head, center_y + head // 2),
+            ),
+            fill=color,
+        )
+    return OverlayTexture(width_px, height_px, image.tobytes("raw", "RGBA"))
+
+
+def build_debug_torque_texture(
+    width_px: int,
+    height_px: int,
+    color: tuple[int, int, int, int],
+    clockwise: bool,
+) -> OverlayTexture:
+    image = Image.new("RGBA", (width_px, height_px), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    pad = max(10, min(width_px, height_px) // 8)
+    bounds = (pad, pad, width_px - pad, height_px - pad)
+    width = max(5, min(width_px, height_px) // 10)
+    if clockwise:
+        start, end = 35, 305
+        head = (
+            (width_px - pad, height_px // 2),
+            (width_px - pad - 20, height_px // 2 - 18),
+            (width_px - pad - 5, height_px // 2 + 22),
+        )
+    else:
+        start, end = 215, -55
+        head = (
+            (pad, height_px // 2),
+            (pad + 20, height_px // 2 - 18),
+            (pad + 5, height_px // 2 + 22),
+        )
+    draw.arc(bounds, start=start, end=end, fill=color, width=width)
+    draw.polygon(head, fill=color)
+    return OverlayTexture(width_px, height_px, image.tobytes("raw", "RGBA"))
+
+
 def _draw_progress(
     draw: ImageDraw.ImageDraw,
     button: ButtonConfig,

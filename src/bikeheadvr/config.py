@@ -93,6 +93,45 @@ class PedalEstimationConfig:
 
 
 @dataclass(frozen=True)
+class SkatingConfig:
+    debug_foot_overlay_enabled: bool = True
+    debug_foot_overlay_length_m: float = 0.34
+    debug_foot_overlay_y_offset_m: float = 0.035
+    debug_ghost_overlay_enabled: bool = True
+    debug_ghost_forward_m: float = 1.5
+    debug_ghost_y_offset_m: float = 0.08
+    debug_force_arrow_scale_m: float = 0.06
+    debug_velocity_arrow_scale_m: float = 0.35
+    debug_arrow_min_width_m: float = 0.12
+    debug_arrow_max_width_m: float = 0.75
+    contact_enter_m: float = 0.05
+    contact_leave_m: float = 0.08
+    contact_full_load_m: float = 0.02
+    contact_tilt_full_load_deg: float = 10.0
+    contact_tilt_zero_load_deg: float = 35.0
+    tracker_velocity_blend: float = 0.0
+    max_foot_speed_m_s: float = 10.0
+    push_yaw_gain: float = 2.5
+    passive_brake_speed_m_s: float = 0.25
+    passive_brake_deadzone_deg: float = 25.0
+    passive_brake_full_angle_deg: float = 65.0
+    passive_brake_min_scale: float = 0.18
+    landing_grace_s: float = 0.45
+    landing_brake_min_scale: float = 0.12
+    longitudinal_drag_per_s: float = 0.18
+    lateral_drag_per_s: float = 7.5
+    coast_drag_per_s: float = 0.08
+    angular_drag_per_s: float = 2.4
+    torque_gain_per_s: float = 4.0
+    max_speed_m_s: float = 3.0
+    full_speed_m_s: float = 2.2
+    max_yaw_rate_deg_s: float = 180.0
+    dropout_grace_s: float = 0.25
+    dropout_fall_s: float = 0.7
+    playspace_yaw_deadzone_deg: float = 1.0
+
+
+@dataclass(frozen=True)
 class CalibrationMessageConfig:
     key: str = "dev.bikeheadvr.overlay.calibration_message"
     label: str = "Calibrate"
@@ -122,6 +161,7 @@ class AppConfig:
     pedal_estimation: PedalEstimationConfig = field(
         default_factory=PedalEstimationConfig
     )
+    skating: SkatingConfig = field(default_factory=SkatingConfig)
     calibration_message: CalibrationMessageConfig = field(
         default_factory=CalibrationMessageConfig
     )

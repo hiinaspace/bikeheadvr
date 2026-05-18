@@ -37,6 +37,13 @@ class GazeRay:
 class HmdPose:
     position: tuple[float, float, float]
     direction: tuple[float, float, float]
+    orientation: tuple[
+        tuple[float, float, float],
+        tuple[float, float, float],
+        tuple[float, float, float],
+    ] = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    velocity_m_s: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    angular_velocity_rad_s: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 
 @dataclass(frozen=True)
@@ -44,6 +51,31 @@ class TrackerPose:
     device_index: int
     serial: str
     position: tuple[float, float, float]
+    orientation: tuple[
+        tuple[float, float, float],
+        tuple[float, float, float],
+        tuple[float, float, float],
+    ] = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    velocity_m_s: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    angular_velocity_rad_s: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+
+@dataclass(frozen=True)
+class DevicePose:
+    device_index: int
+    serial: str
+    device_class: int
+    device_class_name: str
+    controller_role: int
+    controller_role_name: str
+    position: tuple[float, float, float]
+    orientation: tuple[
+        tuple[float, float, float],
+        tuple[float, float, float],
+        tuple[float, float, float],
+    ] = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    velocity_m_s: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    angular_velocity_rad_s: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 
 @dataclass(frozen=True)
@@ -104,6 +136,10 @@ class SteamVROverlayRuntime:
         self._created_overlays: dict[str, OverlayHandle] = {}
         self._initialized = False
         self._session_key_suffix = uuid.uuid4().hex[:8]
+        self._chaperone_setup: openvr.IVRChaperoneSetup | None = None
+        self._playspace_baseline: openvr.HmdMatrix34_t | None = None
+        self._playspace_yaw_active = False
+        self._last_playspace_yaw_deg = 0.0
 
     def initialize(self) -> None:
         try:
@@ -115,6 +151,7 @@ class SteamVROverlayRuntime:
             _log_vrserver_running()
             self._system = openvr.init(openvr.VRApplication_Overlay)
             self._overlay_api = openvr.VROverlay()
+            self._chaperone_setup = openvr.VRChaperoneSetup()
             self._texture_manager = OpenGLTextureManager()
             self._initialized = True
         except OpenVRError as exc:
@@ -153,6 +190,11 @@ class SteamVROverlayRuntime:
             openvr.TrackingUniverseStanding,
             make_hmd_matrix34(placement),
         )
+
+    def set_overlay_width(self, overlay: OverlayHandle, width_m: float) -> None:
+        if self._overlay_api is None:
+            raise RuntimeError("OpenVR overlay API is not initialized")
+        self._overlay_api.setOverlayWidthInMeters(overlay.value, width_m)
 
     def update_overlay_placement_relative_to_hmd(
         self, overlay: OverlayHandle, placement: OverlayPlacement
@@ -206,7 +248,13 @@ class SteamVROverlayRuntime:
         matrix = hmd_pose.mDeviceToAbsoluteTracking
         source = (matrix.m[0][3], matrix.m[1][3], matrix.m[2][3])
         direction = _normalize((-matrix.m[0][2], -matrix.m[1][2], -matrix.m[2][2]))
-        return HmdPose(position=source, direction=direction)
+        return HmdPose(
+            position=source,
+            direction=direction,
+            orientation=_matrix34_orientation(matrix),
+            velocity_m_s=_vector3(hmd_pose.vVelocity),
+            angular_velocity_rad_s=_vector3(hmd_pose.vAngularVelocity),
+        )
 
     def get_tracker_poses(self) -> list[TrackerPose]:
         poses = self._get_all_poses()
@@ -231,9 +279,48 @@ class SteamVROverlayRuntime:
                     device_index=device_index,
                     serial=self._get_device_serial(device_index),
                     position=(matrix.m[0][3], matrix.m[1][3], matrix.m[2][3]),
+                    orientation=_matrix34_orientation(matrix),
+                    velocity_m_s=_vector3(pose.vVelocity),
+                    angular_velocity_rad_s=_vector3(pose.vAngularVelocity),
                 )
             )
         return tracker_poses
+
+    def get_device_poses(self, include_hmd: bool = False) -> list[DevicePose]:
+        poses = self._get_all_poses()
+        if poses is None or self._system is None:
+            return []
+
+        device_poses: list[DevicePose] = []
+        for device_index in range(openvr.k_unMaxTrackedDeviceCount):
+            if (
+                device_index == openvr.k_unTrackedDeviceIndex_Hmd
+                and not include_hmd
+            ):
+                continue
+            pose = poses[device_index]
+            if not pose.bPoseIsValid:
+                continue
+            device_class = self._system.getTrackedDeviceClass(device_index)
+            if device_class == openvr.TrackedDeviceClass_Invalid:
+                continue
+            controller_role = self._controller_role(device_index, device_class)
+            matrix = pose.mDeviceToAbsoluteTracking
+            device_poses.append(
+                DevicePose(
+                    device_index=device_index,
+                    serial=self._get_device_serial(device_index),
+                    device_class=device_class,
+                    device_class_name=_tracked_device_class_name(device_class),
+                    controller_role=controller_role,
+                    controller_role_name=_controller_role_name(controller_role),
+                    position=(matrix.m[0][3], matrix.m[1][3], matrix.m[2][3]),
+                    orientation=_matrix34_orientation(matrix),
+                    velocity_m_s=_vector3(pose.vVelocity),
+                    angular_velocity_rad_s=_vector3(pose.vAngularVelocity),
+                )
+            )
+        return device_poses
 
     def _get_all_poses(
         self,
@@ -293,7 +380,71 @@ class SteamVROverlayRuntime:
     def pump_overlay_events(self) -> None:
         return
 
+    def capture_playspace_yaw_baseline(self) -> bool:
+        if self._chaperone_setup is None:
+            raise RuntimeError("OpenVR chaperone setup API is not initialized")
+        try:
+            matrix = _extract_hmd_matrix34(
+                self._chaperone_setup.getWorkingStandingZeroPoseToRawTrackingPose()
+            )
+            if matrix is None:
+                LOGGER.warning("Failed to capture playspace yaw baseline")
+                return False
+            self._playspace_baseline = _copy_hmd_matrix34(matrix)
+            self._last_playspace_yaw_deg = 0.0
+            self._playspace_yaw_active = False
+            return True
+        except OpenVRError:
+            LOGGER.warning("Failed to capture playspace yaw baseline", exc_info=True)
+            return False
+
+    def apply_playspace_yaw_offset(
+        self,
+        yaw_deg: float,
+        pivot_position: tuple[float, float, float],
+    ) -> bool:
+        if self._chaperone_setup is None:
+            raise RuntimeError("OpenVR chaperone setup API is not initialized")
+        if self._playspace_baseline is None and not self.capture_playspace_yaw_baseline():
+            return False
+        if self._playspace_baseline is None:
+            return False
+
+        try:
+            matrix = _yaw_matrix_about_pivot(
+                self._playspace_baseline,
+                math.radians(yaw_deg),
+                pivot_position,
+            )
+            self._chaperone_setup.setWorkingStandingZeroPoseToRawTrackingPose(matrix)
+            self._chaperone_setup.showWorkingSetPreview()
+            self._playspace_yaw_active = True
+            self._last_playspace_yaw_deg = yaw_deg
+            return True
+        except OpenVRError:
+            LOGGER.warning("Failed to apply playspace yaw offset", exc_info=True)
+            return False
+
+    def restore_playspace_yaw(self) -> None:
+        if (
+            self._chaperone_setup is None
+            or self._playspace_baseline is None
+            or not self._playspace_yaw_active
+        ):
+            return
+        try:
+            self._chaperone_setup.setWorkingStandingZeroPoseToRawTrackingPose(
+                _copy_hmd_matrix34(self._playspace_baseline)
+            )
+            self._chaperone_setup.hideWorkingSetPreview()
+        except OpenVRError:
+            LOGGER.warning("Failed to restore playspace yaw baseline", exc_info=True)
+        finally:
+            self._playspace_yaw_active = False
+            self._last_playspace_yaw_deg = 0.0
+
     def shutdown(self) -> None:
+        self.restore_playspace_yaw()
         if self._overlay_api is not None:
             for overlay in self._created_overlays.values():
                 try:
@@ -316,6 +467,8 @@ class SteamVROverlayRuntime:
             self._initialized = False
             self._overlay_api = None
             self._system = None
+            self._chaperone_setup = None
+            self._playspace_baseline = None
 
     def _format_init_error(self, exc: OpenVRError) -> str:
         text = str(exc)
@@ -368,6 +521,132 @@ class SteamVROverlayRuntime:
         except OpenVRError:
             LOGGER.debug("Failed to read tracker serial", exc_info=True)
             return f"device_{device_index}"
+
+    def _controller_role(self, device_index: int, device_class: int) -> int:
+        if (
+            self._system is None
+            or device_class != openvr.TrackedDeviceClass_Controller
+        ):
+            return openvr.TrackedControllerRole_Invalid
+        try:
+            return self._system.getControllerRoleForTrackedDeviceIndex(device_index)
+        except OpenVRError:
+            LOGGER.debug("Failed to read controller role", exc_info=True)
+            return openvr.TrackedControllerRole_Invalid
+
+
+def _matrix34_orientation(
+    matrix: openvr.HmdMatrix34_t,
+) -> tuple[
+    tuple[float, float, float],
+    tuple[float, float, float],
+    tuple[float, float, float],
+]:
+    return (
+        (matrix.m[0][0], matrix.m[0][1], matrix.m[0][2]),
+        (matrix.m[1][0], matrix.m[1][1], matrix.m[1][2]),
+        (matrix.m[2][0], matrix.m[2][1], matrix.m[2][2]),
+    )
+
+
+def _vector3(vector: openvr.HmdVector3_t) -> tuple[float, float, float]:
+    return (float(vector.v[0]), float(vector.v[1]), float(vector.v[2]))
+
+
+def _tracked_device_class_name(device_class: int) -> str:
+    names = {
+        openvr.TrackedDeviceClass_Invalid: "Invalid",
+        openvr.TrackedDeviceClass_HMD: "HMD",
+        openvr.TrackedDeviceClass_Controller: "Controller",
+        openvr.TrackedDeviceClass_GenericTracker: "GenericTracker",
+        openvr.TrackedDeviceClass_TrackingReference: "TrackingReference",
+        openvr.TrackedDeviceClass_DisplayRedirect: "DisplayRedirect",
+    }
+    return names.get(device_class, f"Unknown{device_class}")
+
+
+def _controller_role_name(role: int) -> str:
+    names = {
+        openvr.TrackedControllerRole_Invalid: "Invalid",
+        openvr.TrackedControllerRole_LeftHand: "LeftHand",
+        openvr.TrackedControllerRole_RightHand: "RightHand",
+        openvr.TrackedControllerRole_OptOut: "OptOut",
+        openvr.TrackedControllerRole_Treadmill: "Treadmill",
+        openvr.TrackedControllerRole_Stylus: "Stylus",
+    }
+    return names.get(role, f"Unknown{role}")
+
+
+def _copy_hmd_matrix34(matrix: openvr.HmdMatrix34_t) -> openvr.HmdMatrix34_t:
+    copied = openvr.HmdMatrix34_t()
+    for row_idx in range(3):
+        for col_idx in range(4):
+            copied.m[row_idx][col_idx] = matrix.m[row_idx][col_idx]
+    return copied
+
+
+def _extract_hmd_matrix34(value: object) -> openvr.HmdMatrix34_t | None:
+    if isinstance(value, tuple) and len(value) == 2:
+        ok, matrix = value
+        if not ok:
+            return None
+        if isinstance(matrix, openvr.HmdMatrix34_t):
+            return matrix
+    if isinstance(value, openvr.HmdMatrix34_t):
+        return value
+    return None
+
+
+def _yaw_matrix_about_pivot(
+    baseline: openvr.HmdMatrix34_t,
+    yaw_rad: float,
+    pivot_position: tuple[float, float, float],
+) -> openvr.HmdMatrix34_t:
+    baseline_rotation = [
+        [baseline.m[row_idx][col_idx] for col_idx in range(3)]
+        for row_idx in range(3)
+    ]
+    rotation = [
+        [math.cos(yaw_rad), 0.0, math.sin(yaw_rad)],
+        [0.0, 1.0, 0.0],
+        [-math.sin(yaw_rad), 0.0, math.cos(yaw_rad)],
+    ]
+    next_rotation = _matmul(rotation, baseline_rotation)
+    baseline_translation = (baseline.m[0][3], baseline.m[1][3], baseline.m[2][3])
+    raw_pivot = _add3(_matvec3(baseline_rotation, pivot_position), baseline_translation)
+    next_translation = _sub3(raw_pivot, _matvec3(next_rotation, pivot_position))
+
+    matrix = openvr.HmdMatrix34_t()
+    for row_idx in range(3):
+        for col_idx in range(3):
+            matrix.m[row_idx][col_idx] = next_rotation[row_idx][col_idx]
+        matrix.m[row_idx][3] = next_translation[row_idx]
+    return matrix
+
+
+def _matvec3(
+    matrix: list[list[float]],
+    vector: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    return (
+        sum(matrix[0][idx] * vector[idx] for idx in range(3)),
+        sum(matrix[1][idx] * vector[idx] for idx in range(3)),
+        sum(matrix[2][idx] * vector[idx] for idx in range(3)),
+    )
+
+
+def _add3(
+    left: tuple[float, float, float],
+    right: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    return (left[0] + right[0], left[1] + right[1], left[2] + right[2])
+
+
+def _sub3(
+    left: tuple[float, float, float],
+    right: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    return (left[0] - right[0], left[1] - right[1], left[2] - right[2])
 
 
 def _openvr_package_version() -> str:

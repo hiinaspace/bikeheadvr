@@ -18,3 +18,7 @@ tmp*/
 
 # Local reference clones
 vendor/
+
+# Local agent/tool state and VR capture data
+.claude/
+recordings/

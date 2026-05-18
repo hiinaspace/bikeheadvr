@@ -38,6 +38,10 @@ def test_parse_skating_mode_options() -> None:
             "0.1",
             "--skating-balance-load-max",
             "1.4",
+            "--skating-recovery-relief-min-scale",
+            "0.2",
+            "--skating-forward-glide-preserve-min-scale",
+            "0.3",
             "--duration",
             "1.5",
         ]
@@ -55,6 +59,8 @@ def test_parse_skating_mode_options() -> None:
     assert args.skating_balance_load_radius_m == 0.2
     assert args.skating_balance_load_min == 0.1
     assert args.skating_balance_load_max == 1.4
+    assert args.skating_recovery_relief_min_scale == 0.2
+    assert args.skating_forward_glide_preserve_min_scale == 0.3
     assert args.duration == 1.5
 
 
@@ -76,6 +82,8 @@ def test_runtime_options_apply_skating_tuning_overrides() -> None:
             skating_balance_load_radius_m=0.2,
             skating_balance_load_min=0.1,
             skating_balance_load_max=1.4,
+            skating_recovery_relief_min_scale=0.2,
+            skating_forward_glide_preserve_min_scale=0.3,
         )
     )
 
@@ -86,6 +94,8 @@ def test_runtime_options_apply_skating_tuning_overrides() -> None:
     assert config.skating.balance_load_radius_m == 0.2
     assert config.skating.balance_load_min == 0.1
     assert config.skating.balance_load_max == 1.4
+    assert config.skating.recovery_relief_min_scale == 0.2
+    assert config.skating.forward_glide_preserve_min_scale == 0.3
 
 
 def test_skating_tracker_height_warning_flags_mismatched_feet() -> None:

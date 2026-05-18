@@ -195,6 +195,9 @@ def test_skating_recording_round_trips_and_replays() -> None:
         assert records[3]["segment_relative_s"] == 0.1
         assert records[3]["record_only"] is False
         assert records[3]["trackers"][0]["velocity_m_s"] == [0.0, 0.0, 1.0]
+        recorded_foot = next(iter(records[3]["estimate"]["feet"].values()))
+        assert "recovery_scale" in recorded_foot
+        assert "glide_preserve_scale" in recorded_foot
         assert load_skating_config_from_recording(path) == config
 
         replay = replay_skating_recording(path, config=config)

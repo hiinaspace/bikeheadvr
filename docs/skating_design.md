@@ -184,6 +184,10 @@ the current `raw_to_standing` 3x4 transform when SteamVR provides it.
   uses the highest non-foot generic tracker as a hip/COM proxy when available,
   otherwise HMD XZ. Balance load is based on horizontal COM-to-foot distances and
   is exposed in recordings as `balance_load` plus final `force_load`.
+- A recovery-stroke relief heuristic scales down backward force from a foot that
+  is moving forward and roughly aligned with the current skate direction. This
+  intentionally favors preserving glide over physical braking fidelity until we
+  have clean braking recordings.
 - Foot trackers do not provide force feedback, so passive braking requires
   generous slop.
 - Chaperone-yaw turning is still experimental. Physics is now insulated from

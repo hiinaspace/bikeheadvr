@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import pytest
 
@@ -513,6 +514,7 @@ def test_yawed_skates_with_right_shifted_com_create_turning_force_and_torque() -
         push_yaw_gain=1.0,
         passive_brake_min_scale=1.0,
         landing_brake_min_scale=1.0,
+        forward_glide_preserve_enabled=False,
     )
     estimator = calibrated_estimator(config=config)
     warm_contact(estimator, default_feet())
@@ -911,6 +913,107 @@ def test_landing_grace_temporarily_softens_moderate_braking() -> None:
     settled = _estimate_after_landing_at(config, 0.9)
 
     assert early.velocity_forward_m_s > settled.velocity_forward_m_s
+
+
+def test_forward_recovery_stroke_relief_preserves_forward_velocity() -> None:
+    config = SkatingConfig(
+        coast_drag_per_s=0.0,
+        longitudinal_drag_per_s=0.1,
+        lateral_drag_per_s=5.0,
+        angular_drag_per_s=0.0,
+        torque_gain_per_s=5.0,
+        push_yaw_gain=1.0,
+        passive_brake_min_scale=1.0,
+        landing_brake_min_scale=1.0,
+        forward_glide_preserve_enabled=False,
+        recovery_relief_enabled=True,
+        recovery_relief_foot_speed_m_s=0.2,
+        recovery_relief_full_speed_m_s=0.7,
+        recovery_relief_min_scale=0.05,
+    )
+    without_relief = calibrated_estimator(
+        config=replace(config, recovery_relief_enabled=False)
+    )
+    with_relief = calibrated_estimator(config=config)
+    warm_contact(without_relief, default_feet())
+    warm_contact(with_relief, default_feet())
+    without_relief._state.velocity_forward_m_s = 0.6
+    with_relief._state.velocity_forward_m_s = 0.6
+    returning_foot = [
+        tracker("left", -0.2, 0.0, 0.1, 8.0),
+        tracker("right", 0.2, 0.2, 0.0),
+    ]
+
+    braking = without_relief.update(0.2, hmd(), returning_foot)
+    relieved = with_relief.update(0.2, hmd(), returning_foot)
+
+    assert relieved.feet["left"].recovery_scale < 0.2
+    assert relieved.velocity_forward_m_s > braking.velocity_forward_m_s
+    assert abs(relieved.feet["left"].force_forward_m_s2) < abs(
+        braking.feet["left"].force_forward_m_s2
+    )
+
+
+def test_forward_glide_preserve_reduces_aligned_forward_braking_only() -> None:
+    config = SkatingConfig(
+        coast_drag_per_s=0.0,
+        longitudinal_drag_per_s=0.1,
+        lateral_drag_per_s=5.0,
+        angular_drag_per_s=0.0,
+        torque_gain_per_s=5.0,
+        push_yaw_gain=1.0,
+        passive_brake_min_scale=1.0,
+        landing_brake_min_scale=1.0,
+        recovery_relief_enabled=False,
+        forward_glide_preserve_enabled=True,
+    )
+    without_preserve = calibrated_estimator(
+        config=replace(config, forward_glide_preserve_enabled=False)
+    )
+    with_preserve = calibrated_estimator(config=config)
+    warm_contact(without_preserve, default_feet())
+    warm_contact(with_preserve, default_feet())
+    without_preserve._state.velocity_forward_m_s = 0.6
+    with_preserve._state.velocity_forward_m_s = 0.6
+    yawed_rolling_foot = [
+        tracker("left", -0.2, 0.0, 0.0, 15.0),
+        tracker("right", 0.2, 0.2, 0.0),
+    ]
+
+    braking = without_preserve.update(0.2, hmd(), yawed_rolling_foot)
+    preserved = with_preserve.update(0.2, hmd(), yawed_rolling_foot)
+
+    assert preserved.feet["left"].glide_preserve_scale < 0.1
+    assert preserved.velocity_forward_m_s > braking.velocity_forward_m_s
+    assert preserved.feet["left"].force_right_m_s2 == pytest.approx(
+        braking.feet["left"].force_right_m_s2
+    )
+
+
+def test_sideways_brake_does_not_get_recovery_relief() -> None:
+    estimator = calibrated_estimator(
+        config=SkatingConfig(
+            coast_drag_per_s=0.0,
+            longitudinal_drag_per_s=0.1,
+            lateral_drag_per_s=5.0,
+            angular_drag_per_s=0.0,
+            torque_gain_per_s=5.0,
+            recovery_relief_enabled=True,
+        )
+    )
+    warm_contact(estimator, default_feet())
+    estimator._state.velocity_forward_m_s = 0.6
+
+    estimate = estimator.update(
+        0.2,
+        hmd(),
+        [
+            tracker("left", -0.2, 0.0, 0.1, 75.0),
+            tracker("right", 0.2, 0.2, 0.0),
+        ],
+    )
+
+    assert estimate.feet["left"].recovery_scale == pytest.approx(1.0)
 
 
 def _estimate_after_landing_at(config: SkatingConfig, estimate_time_s: float):

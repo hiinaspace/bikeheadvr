@@ -36,6 +36,8 @@ class SkatingFootEstimate:
     skate_yaw_deg: float
     balance_load: float = 1.0
     force_load: float = 0.0
+    recovery_scale: float = 1.0
+    glide_preserve_scale: float = 1.0
     tilt_deg: float = 0.0
     force_right_m_s2: float = 0.0
     force_forward_m_s2: float = 0.0
@@ -234,6 +236,8 @@ class SkatingEstimator:
             force_right = 0.0
             force_forward = 0.0
             foot_torque = 0.0
+            recovery_scale = 1.0
+            glide_preserve_scale = 1.0
             if (
                 foot_state.grounded
                 and was_grounded
@@ -265,6 +269,22 @@ class SkatingEstimator:
                 )
                 force_right *= brake_scale
                 force_forward *= brake_scale
+                recovery_scale = _recovery_brake_scale(
+                    _force_skate_yaw_deg(skate_yaw_deg, self._config),
+                    self._state.velocity_forward_m_s,
+                    foot_velocity_forward_m_s,
+                    force_forward,
+                    self._config,
+                )
+                force_right *= recovery_scale
+                force_forward *= recovery_scale
+                glide_preserve_scale = _forward_glide_preserve_scale(
+                    _force_skate_yaw_deg(skate_yaw_deg, self._config),
+                    self._state.velocity_forward_m_s,
+                    force_forward,
+                    self._config,
+                )
+                force_forward *= glide_preserve_scale
                 foot_torque = (
                     (foot_forward_m - body_forward_m) * force_right
                     - (foot_right_m - body_right_m) * force_forward
@@ -279,6 +299,8 @@ class SkatingEstimator:
                 contact_load=contact_load,
                 balance_load=balance_load,
                 force_load=force_load,
+                recovery_scale=recovery_scale,
+                glide_preserve_scale=glide_preserve_scale,
                 skate_yaw_deg=skate_yaw_deg,
                 tilt_deg=tilt_deg,
                 force_right_m_s2=force_right,
@@ -822,6 +844,100 @@ def _passive_brake_scale(
             scale = min(scale, landing_scale)
 
     return _clamp(scale, 0.0, 1.0)
+
+
+def _recovery_brake_scale(
+    skate_yaw_deg: float,
+    velocity_forward_m_s: float,
+    foot_velocity_forward_m_s: float,
+    force_forward_m_s2: float,
+    config: SkatingConfig,
+) -> float:
+    if not config.recovery_relief_enabled:
+        return 1.0
+    if force_forward_m_s2 >= 0.0:
+        return 1.0
+    if velocity_forward_m_s < config.recovery_relief_body_forward_min_m_s:
+        return 1.0
+    intent_speed_m_s = foot_velocity_forward_m_s
+    if intent_speed_m_s <= config.recovery_relief_foot_speed_m_s:
+        return 1.0
+
+    speed_span = max(
+        0.001,
+        config.recovery_relief_full_speed_m_s
+        - config.recovery_relief_foot_speed_m_s,
+    )
+    speed_progress = _clamp(
+        (intent_speed_m_s - config.recovery_relief_foot_speed_m_s)
+        / speed_span,
+        0.0,
+        1.0,
+    )
+
+    abs_yaw_deg = abs(_wrap_skate_axis_deg(skate_yaw_deg))
+    if abs_yaw_deg >= config.recovery_relief_yaw_none_deg:
+        return 1.0
+    if abs_yaw_deg <= config.recovery_relief_yaw_full_deg:
+        yaw_progress = 1.0
+    else:
+        yaw_span = max(
+            0.001,
+            config.recovery_relief_yaw_none_deg
+            - config.recovery_relief_yaw_full_deg,
+        )
+        yaw_progress = 1.0 - _smoothstep(
+            (abs_yaw_deg - config.recovery_relief_yaw_full_deg) / yaw_span
+        )
+
+    relief = _smoothstep(speed_progress) * yaw_progress
+    min_scale = _clamp(config.recovery_relief_min_scale, 0.0, 1.0)
+    return 1.0 - relief * (1.0 - min_scale)
+
+
+def _forward_glide_preserve_scale(
+    skate_yaw_deg: float,
+    velocity_forward_m_s: float,
+    force_forward_m_s2: float,
+    config: SkatingConfig,
+) -> float:
+    if not config.forward_glide_preserve_enabled:
+        return 1.0
+    if force_forward_m_s2 >= 0.0:
+        return 1.0
+    if velocity_forward_m_s <= config.forward_glide_preserve_min_speed_m_s:
+        return 1.0
+
+    speed_span = max(
+        0.001,
+        config.forward_glide_preserve_full_speed_m_s
+        - config.forward_glide_preserve_min_speed_m_s,
+    )
+    speed_progress = _clamp(
+        (velocity_forward_m_s - config.forward_glide_preserve_min_speed_m_s)
+        / speed_span,
+        0.0,
+        1.0,
+    )
+
+    abs_yaw_deg = abs(_wrap_skate_axis_deg(skate_yaw_deg))
+    if abs_yaw_deg >= config.forward_glide_preserve_yaw_none_deg:
+        return 1.0
+    if abs_yaw_deg <= config.forward_glide_preserve_yaw_full_deg:
+        yaw_progress = 1.0
+    else:
+        yaw_span = max(
+            0.001,
+            config.forward_glide_preserve_yaw_none_deg
+            - config.forward_glide_preserve_yaw_full_deg,
+        )
+        yaw_progress = 1.0 - _smoothstep(
+            (abs_yaw_deg - config.forward_glide_preserve_yaw_full_deg) / yaw_span
+        )
+
+    relief = _smoothstep(speed_progress) * yaw_progress
+    min_scale = _clamp(config.forward_glide_preserve_min_scale, 0.0, 1.0)
+    return 1.0 - relief * (1.0 - min_scale)
 
 
 def _axis_brake_scale(axis_diff_deg: float, config: SkatingConfig) -> float:

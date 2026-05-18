@@ -447,6 +447,8 @@ def skating_estimate_to_dict(estimate: SkatingEstimate) -> dict[str, Any]:
                 "skate_yaw_deg": foot.skate_yaw_deg,
                 "balance_load": foot.balance_load,
                 "force_load": foot.force_load,
+                "recovery_scale": foot.recovery_scale,
+                "glide_preserve_scale": foot.glide_preserve_scale,
                 "tilt_deg": foot.tilt_deg,
                 "force_right_m_s2": foot.force_right_m_s2,
                 "force_forward_m_s2": foot.force_forward_m_s2,
@@ -483,6 +485,8 @@ def skating_estimate_from_dict(raw: dict[str, Any]) -> SkatingEstimate:
                 force_load=float(
                     foot.get("force_load", foot.get("contact_load", 0.0))
                 ),
+                recovery_scale=float(foot.get("recovery_scale", 1.0)),
+                glide_preserve_scale=float(foot.get("glide_preserve_scale", 1.0)),
                 tilt_deg=float(foot.get("tilt_deg", 0.0)),
                 force_right_m_s2=float(foot.get("force_right_m_s2", 0.0)),
                 force_forward_m_s2=float(foot.get("force_forward_m_s2", 0.0)),

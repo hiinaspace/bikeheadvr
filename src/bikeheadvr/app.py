@@ -74,6 +74,8 @@ class RuntimeOptions:
     skating_balance_load_radius_m: float | None = None
     skating_balance_load_min: float | None = None
     skating_balance_load_max: float | None = None
+    skating_recovery_relief_min_scale: float | None = None
+    skating_forward_glide_preserve_min_scale: float | None = None
     verbose: bool = False
     log_file: Path | None = None
 
@@ -144,6 +146,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skating-balance-load-radius-m", type=float)
     parser.add_argument("--skating-balance-load-min", type=float)
     parser.add_argument("--skating-balance-load-max", type=float)
+    parser.add_argument("--skating-recovery-relief-min-scale", type=float)
+    parser.add_argument("--skating-forward-glide-preserve-min-scale", type=float)
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args(argv)
 
@@ -198,6 +202,10 @@ def build_runtime_config(options: RuntimeOptions) -> AppConfig:
         "balance_load_radius_m": options.skating_balance_load_radius_m,
         "balance_load_min": options.skating_balance_load_min,
         "balance_load_max": options.skating_balance_load_max,
+        "recovery_relief_min_scale": options.skating_recovery_relief_min_scale,
+        "forward_glide_preserve_min_scale": (
+            options.skating_forward_glide_preserve_min_scale
+        ),
     }
     active_skating_overrides = {
         key: value
@@ -822,6 +830,10 @@ def cli_main(argv: list[str] | None = None) -> int:
         skating_balance_load_radius_m=args.skating_balance_load_radius_m,
         skating_balance_load_min=args.skating_balance_load_min,
         skating_balance_load_max=args.skating_balance_load_max,
+        skating_recovery_relief_min_scale=args.skating_recovery_relief_min_scale,
+        skating_forward_glide_preserve_min_scale=(
+            args.skating_forward_glide_preserve_min_scale
+        ),
         verbose=args.verbose,
     )
     return run_session(options)

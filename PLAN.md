@@ -24,19 +24,23 @@ debug contact, braking, and turn behavior.
 - Hip/COM-derived balance load is useful telemetry and a conservative force
   multiplier, but current recordings show it is not enough by itself to classify
   recovery-foot braking.
+- The current tuning intentionally preserves forward glide: recovery strokes and
+  mostly aligned passive braking are relieved aggressively until we capture
+  deliberate braking samples.
 
 ## Near-Term Tasks
 
 1. Record clean single-push and alternating-push samples with raw-frame metadata.
-2. Add a recovery-stroke relief heuristic for feet moving forward with low
-   propulsive intent, using balance/load as one input.
-3. Replay the new recordings and compare contact load, force, and touchdown
+2. Live-test the recovery relief and looser passive braking against alternating
+   pushes.
+3. Record deliberate braking samples if stopping becomes too hard.
+4. Replay the new recordings and compare contact load, force, and touchdown
    braking against expected motion.
-4. Decide whether hip tracker COM should replace HMD XZ for force/torque
+5. Decide whether hip tracker COM should replace HMD XZ for force/torque
    leverage beyond normal-load estimation.
-5. Use the ghost debug overlays to compare COM, force, torque, and body yaw
+6. Use the ghost debug overlays to compare COM, force, torque, and body yaw
    during live testing.
-6. Re-test chaperone yaw as a presentation transform only.
+7. Re-test chaperone yaw as a presentation transform only.
 
 ## Regression Tests
 

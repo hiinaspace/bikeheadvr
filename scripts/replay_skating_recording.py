@@ -21,6 +21,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("recording", type=Path)
     parser.add_argument("--csv-out", type=Path)
+    parser.add_argument(
+        "--current-defaults",
+        action="store_true",
+        help="Replay with current code defaults instead of the recording's saved config.",
+    )
     parser.add_argument("--lateral-drag-per-s", type=float)
     parser.add_argument("--longitudinal-drag-per-s", type=float)
     parser.add_argument("--coast-drag-per-s", type=float)
@@ -41,6 +46,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--balance-load-radius-m", type=float)
     parser.add_argument("--balance-load-min", type=float)
     parser.add_argument("--balance-load-max", type=float)
+    parser.add_argument("--recovery-relief-foot-speed-m-s", type=float)
+    parser.add_argument("--recovery-relief-full-speed-m-s", type=float)
+    parser.add_argument("--recovery-relief-body-forward-min-m-s", type=float)
+    parser.add_argument("--recovery-relief-yaw-full-deg", type=float)
+    parser.add_argument("--recovery-relief-yaw-none-deg", type=float)
+    parser.add_argument("--recovery-relief-min-scale", type=float)
+    parser.add_argument("--forward-glide-preserve-min-scale", type=float)
+    parser.add_argument("--forward-glide-preserve-yaw-full-deg", type=float)
+    parser.add_argument("--forward-glide-preserve-yaw-none-deg", type=float)
     parser.add_argument("--full-speed-m-s", type=float)
     return parser.parse_args()
 
@@ -86,14 +100,35 @@ def _config_with_overrides(args: argparse.Namespace) -> SkatingConfig | None:
         "balance_load_radius_m": args.balance_load_radius_m,
         "balance_load_min": args.balance_load_min,
         "balance_load_max": args.balance_load_max,
+        "recovery_relief_foot_speed_m_s": args.recovery_relief_foot_speed_m_s,
+        "recovery_relief_full_speed_m_s": args.recovery_relief_full_speed_m_s,
+        "recovery_relief_body_forward_min_m_s": (
+            args.recovery_relief_body_forward_min_m_s
+        ),
+        "recovery_relief_yaw_full_deg": args.recovery_relief_yaw_full_deg,
+        "recovery_relief_yaw_none_deg": args.recovery_relief_yaw_none_deg,
+        "recovery_relief_min_scale": args.recovery_relief_min_scale,
+        "forward_glide_preserve_min_scale": (
+            args.forward_glide_preserve_min_scale
+        ),
+        "forward_glide_preserve_yaw_full_deg": (
+            args.forward_glide_preserve_yaw_full_deg
+        ),
+        "forward_glide_preserve_yaw_none_deg": (
+            args.forward_glide_preserve_yaw_none_deg
+        ),
         "full_speed_m_s": args.full_speed_m_s,
     }
     active_overrides = {
         key: value for key, value in overrides.items() if value is not None
     }
-    if not active_overrides:
+    if not active_overrides and not args.current_defaults:
         return None
-    base = load_skating_config_from_recording(args.recording) or SkatingConfig()
+    base = (
+        SkatingConfig()
+        if args.current_defaults
+        else load_skating_config_from_recording(args.recording) or SkatingConfig()
+    )
     return replace(base, **active_overrides)
 
 
@@ -158,6 +193,8 @@ def _write_csv(path: Path, samples: list[SkatingReplaySample]) -> None:
         "left_contact_load",
         "left_balance_load",
         "left_force_load",
+        "left_recovery_scale",
+        "left_glide_preserve_scale",
         "left_skate_yaw_deg",
         "left_tilt_deg",
         "left_force_right_m_s2",
@@ -179,6 +216,8 @@ def _write_csv(path: Path, samples: list[SkatingReplaySample]) -> None:
         "right_contact_load",
         "right_balance_load",
         "right_force_load",
+        "right_recovery_scale",
+        "right_glide_preserve_scale",
         "right_skate_yaw_deg",
         "right_tilt_deg",
         "right_force_right_m_s2",
@@ -251,6 +290,12 @@ def _write_csv(path: Path, samples: list[SkatingReplaySample]) -> None:
                     "left_contact_load": "" if left is None else _fmt(left.contact_load),
                     "left_balance_load": "" if left is None else _fmt(left.balance_load),
                     "left_force_load": "" if left is None else _fmt(left.force_load),
+                    "left_recovery_scale": (
+                        "" if left is None else _fmt(left.recovery_scale)
+                    ),
+                    "left_glide_preserve_scale": (
+                        "" if left is None else _fmt(left.glide_preserve_scale)
+                    ),
                     "left_skate_yaw_deg": "" if left is None else _fmt(left.skate_yaw_deg),
                     "left_tilt_deg": "" if left is None else _fmt(left.tilt_deg),
                     "left_force_right_m_s2": (
@@ -265,6 +310,12 @@ def _write_csv(path: Path, samples: list[SkatingReplaySample]) -> None:
                     "right_contact_load": "" if right is None else _fmt(right.contact_load),
                     "right_balance_load": "" if right is None else _fmt(right.balance_load),
                     "right_force_load": "" if right is None else _fmt(right.force_load),
+                    "right_recovery_scale": (
+                        "" if right is None else _fmt(right.recovery_scale)
+                    ),
+                    "right_glide_preserve_scale": (
+                        "" if right is None else _fmt(right.glide_preserve_scale)
+                    ),
                     "right_skate_yaw_deg": "" if right is None else _fmt(right.skate_yaw_deg),
                     "right_tilt_deg": "" if right is None else _fmt(right.tilt_deg),
                     "right_force_right_m_s2": (

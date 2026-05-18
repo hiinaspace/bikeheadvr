@@ -118,6 +118,10 @@ class SkatingConfig:
     passive_brake_min_scale: float = 0.18
     landing_grace_s: float = 0.45
     landing_brake_min_scale: float = 0.12
+    balance_load_enabled: bool = True
+    balance_load_radius_m: float = 0.8
+    balance_load_min: float = 0.75
+    balance_load_max: float = 1.15
     longitudinal_drag_per_s: float = 0.18
     lateral_drag_per_s: float = 7.5
     coast_drag_per_s: float = 0.08

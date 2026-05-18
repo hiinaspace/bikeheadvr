@@ -38,6 +38,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--passive-brake-min-scale", type=float)
     parser.add_argument("--landing-grace-s", type=float)
     parser.add_argument("--landing-brake-min-scale", type=float)
+    parser.add_argument("--balance-load-radius-m", type=float)
+    parser.add_argument("--balance-load-min", type=float)
+    parser.add_argument("--balance-load-max", type=float)
     parser.add_argument("--full-speed-m-s", type=float)
     return parser.parse_args()
 
@@ -80,6 +83,9 @@ def _config_with_overrides(args: argparse.Namespace) -> SkatingConfig | None:
         "passive_brake_min_scale": args.passive_brake_min_scale,
         "landing_grace_s": args.landing_grace_s,
         "landing_brake_min_scale": args.landing_brake_min_scale,
+        "balance_load_radius_m": args.balance_load_radius_m,
+        "balance_load_min": args.balance_load_min,
+        "balance_load_max": args.balance_load_max,
         "full_speed_m_s": args.full_speed_m_s,
     }
     active_overrides = {
@@ -150,6 +156,8 @@ def _write_csv(path: Path, samples: list[SkatingReplaySample]) -> None:
         "left_avz_rad_s",
         "left_grounded",
         "left_contact_load",
+        "left_balance_load",
+        "left_force_load",
         "left_skate_yaw_deg",
         "left_tilt_deg",
         "left_force_right_m_s2",
@@ -169,6 +177,8 @@ def _write_csv(path: Path, samples: list[SkatingReplaySample]) -> None:
         "right_avz_rad_s",
         "right_grounded",
         "right_contact_load",
+        "right_balance_load",
+        "right_force_load",
         "right_skate_yaw_deg",
         "right_tilt_deg",
         "right_force_right_m_s2",
@@ -239,6 +249,8 @@ def _write_csv(path: Path, samples: list[SkatingReplaySample]) -> None:
                     **_tracker_columns("left", left_pose, left_accel),
                     "left_grounded": "" if left is None else int(left.grounded),
                     "left_contact_load": "" if left is None else _fmt(left.contact_load),
+                    "left_balance_load": "" if left is None else _fmt(left.balance_load),
+                    "left_force_load": "" if left is None else _fmt(left.force_load),
                     "left_skate_yaw_deg": "" if left is None else _fmt(left.skate_yaw_deg),
                     "left_tilt_deg": "" if left is None else _fmt(left.tilt_deg),
                     "left_force_right_m_s2": (
@@ -251,6 +263,8 @@ def _write_csv(path: Path, samples: list[SkatingReplaySample]) -> None:
                     **_tracker_columns("right", right_pose, right_accel),
                     "right_grounded": "" if right is None else int(right.grounded),
                     "right_contact_load": "" if right is None else _fmt(right.contact_load),
+                    "right_balance_load": "" if right is None else _fmt(right.balance_load),
+                    "right_force_load": "" if right is None else _fmt(right.force_load),
                     "right_skate_yaw_deg": "" if right is None else _fmt(right.skate_yaw_deg),
                     "right_tilt_deg": "" if right is None else _fmt(right.tilt_deg),
                     "right_force_right_m_s2": (

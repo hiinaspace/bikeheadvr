@@ -21,17 +21,22 @@ debug contact, braking, and turn behavior.
   of truth for skating physics and recordings.
 - Raw-frame contact Y is probably stable enough to test, but may need a
   standing-up projection if live contact state looks wrong.
+- Hip/COM-derived balance load is useful telemetry and a conservative force
+  multiplier, but current recordings show it is not enough by itself to classify
+  recovery-foot braking.
 
 ## Near-Term Tasks
 
 1. Record clean single-push and alternating-push samples with raw-frame metadata.
-2. Replay the new recordings and compare contact load, force, and touchdown
+2. Add a recovery-stroke relief heuristic for feet moving forward with low
+   propulsive intent, using balance/load as one input.
+3. Replay the new recordings and compare contact load, force, and touchdown
    braking against expected motion.
-3. Decide whether hip tracker COM should replace HMD XZ for force/torque
-   leverage.
-4. Use the ghost debug overlays to compare COM, force, torque, and body yaw
+4. Decide whether hip tracker COM should replace HMD XZ for force/torque
+   leverage beyond normal-load estimation.
+5. Use the ghost debug overlays to compare COM, force, torque, and body yaw
    during live testing.
-5. Re-test chaperone yaw as a presentation transform only.
+6. Re-test chaperone yaw as a presentation transform only.
 
 ## Regression Tests
 

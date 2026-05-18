@@ -180,6 +180,10 @@ the current `raw_to_standing` 3x4 transform when SteamVR provides it.
   a separate standing-up or baseline-up projection.
 - COM is HMD XZ, not hip/weighted body center.
 - Contact load is inferred from tracker height and tilt, not true normal force.
+- Per-foot force is also scaled by a conservative balance-load estimate. The app
+  uses the highest non-foot generic tracker as a hip/COM proxy when available,
+  otherwise HMD XZ. Balance load is based on horizontal COM-to-foot distances and
+  is exposed in recordings as `balance_load` plus final `force_load`.
 - Foot trackers do not provide force feedback, so passive braking requires
   generous slop.
 - Chaperone-yaw turning is still experimental. Physics is now insulated from

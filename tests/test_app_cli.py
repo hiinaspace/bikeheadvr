@@ -32,6 +32,12 @@ def test_parse_skating_mode_options() -> None:
             "0.07",
             "--skating-contact-tilt-zero-load-deg",
             "30",
+            "--skating-balance-load-radius-m",
+            "0.2",
+            "--skating-balance-load-min",
+            "0.1",
+            "--skating-balance-load-max",
+            "1.4",
             "--duration",
             "1.5",
         ]
@@ -46,6 +52,9 @@ def test_parse_skating_mode_options() -> None:
     assert args.skating_tracker_velocity_blend == 0.5
     assert args.skating_contact_leave_m == 0.07
     assert args.skating_contact_tilt_zero_load_deg == 30.0
+    assert args.skating_balance_load_radius_m == 0.2
+    assert args.skating_balance_load_min == 0.1
+    assert args.skating_balance_load_max == 1.4
     assert args.duration == 1.5
 
 
@@ -64,6 +73,9 @@ def test_runtime_options_apply_skating_tuning_overrides() -> None:
             skating_tracker_velocity_blend=0.5,
             skating_contact_leave_m=0.07,
             skating_contact_tilt_zero_load_deg=30.0,
+            skating_balance_load_radius_m=0.2,
+            skating_balance_load_min=0.1,
+            skating_balance_load_max=1.4,
         )
     )
 
@@ -71,6 +83,9 @@ def test_runtime_options_apply_skating_tuning_overrides() -> None:
     assert config.skating.tracker_velocity_blend == 0.5
     assert config.skating.contact_leave_m == 0.07
     assert config.skating.contact_tilt_zero_load_deg == 30.0
+    assert config.skating.balance_load_radius_m == 0.2
+    assert config.skating.balance_load_min == 0.1
+    assert config.skating.balance_load_max == 1.4
 
 
 def test_skating_tracker_height_warning_flags_mismatched_feet() -> None:

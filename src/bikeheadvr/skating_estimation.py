@@ -4,7 +4,7 @@ import math
 from dataclasses import dataclass, field
 
 from .config import SkatingConfig, TrackerConfig
-from .vr_runtime import HmdPose, TrackerPose
+from .vr_runtime import DevicePose, HmdPose, TrackerPose
 
 
 @dataclass(frozen=True)
@@ -34,6 +34,8 @@ class SkatingFootEstimate:
     grounded: bool
     contact_load: float
     skate_yaw_deg: float
+    balance_load: float = 1.0
+    force_load: float = 0.0
     tilt_deg: float = 0.0
     force_right_m_s2: float = 0.0
     force_forward_m_s2: float = 0.0
@@ -111,6 +113,7 @@ class SkatingEstimator:
         *,
         output_hmd_pose: HmdPose | None = None,
         output_calibrated_yaw_deg: float | None = None,
+        body_position: tuple[float, float, float] | None = None,
     ) -> SkatingEstimate:
         model = self._model
         delta_s = (
@@ -143,12 +146,29 @@ class SkatingEstimator:
             )
 
         self._state.dropout_started_at = None
+        body_world_position = body_position or hmd_pose.position
         body_right_m, body_forward_m = to_calibrated_local(
-            hmd_pose.position[0],
-            hmd_pose.position[2],
+            body_world_position[0],
+            body_world_position[2],
             model.center_x_m,
             model.center_z_m,
             model.yaw_deg,
+        )
+        foot_local_positions = {
+            tracker.serial: to_calibrated_local(
+                tracker.position[0],
+                tracker.position[2],
+                model.center_x_m,
+                model.center_z_m,
+                model.yaw_deg,
+            )
+            for tracker in known_trackers
+        }
+        balance_loads = _balance_loads(
+            body_right_m,
+            body_forward_m,
+            foot_local_positions,
+            self._config,
         )
         accel_right_m_s2 = 0.0
         accel_forward_m_s2 = 0.0
@@ -158,13 +178,7 @@ class SkatingEstimator:
         for tracker in known_trackers:
             foot_model = model.feet[tracker.serial]
             foot_state = self._state.feet.setdefault(tracker.serial, _FootState())
-            foot_right_m, foot_forward_m = to_calibrated_local(
-                tracker.position[0],
-                tracker.position[2],
-                model.center_x_m,
-                model.center_z_m,
-                model.yaw_deg,
-            )
+            foot_right_m, foot_forward_m = foot_local_positions[tracker.serial]
             foot_velocity_right_m_s, foot_velocity_forward_m_s = _foot_velocity(
                 foot_state,
                 tracker.position[0],
@@ -210,6 +224,12 @@ class SkatingEstimator:
                 tilt_deg,
                 self._config,
             )
+            balance_load = (
+                balance_loads.get(tracker.serial, 1.0)
+                if foot_state.grounded
+                else 0.0
+            )
+            force_load = contact_load * balance_load
             _update_landing_state(foot_state, now, contact_load)
             force_right = 0.0
             force_forward = 0.0
@@ -217,7 +237,7 @@ class SkatingEstimator:
             if (
                 foot_state.grounded
                 and was_grounded
-                and contact_load > 0.0
+                and force_load > 0.0
                 and delta_s > 0.0
             ):
                 force_right, force_forward = _skate_force(
@@ -231,8 +251,8 @@ class SkatingEstimator:
                     foot_forward_m - body_forward_m,
                     self._config,
                 )
-                force_right *= contact_load
-                force_forward *= contact_load
+                force_right *= force_load
+                force_forward *= force_load
                 brake_scale = _passive_brake_scale(
                     now,
                     foot_state,
@@ -257,6 +277,8 @@ class SkatingEstimator:
                 side=foot_model.side,
                 grounded=foot_state.grounded,
                 contact_load=contact_load,
+                balance_load=balance_load,
+                force_load=force_load,
                 skate_yaw_deg=skate_yaw_deg,
                 tilt_deg=tilt_deg,
                 force_right_m_s2=force_right,
@@ -454,6 +476,26 @@ def build_skating_calibration(
         standing_hmd_y_m=hmd_pose.position[1],
         feet=feet,
     )
+
+
+def infer_skating_body_position(
+    hmd_pose: HmdPose | None,
+    devices: list[DevicePose],
+    selected_trackers: list[TrackerPose],
+) -> tuple[float, float, float] | None:
+    if hmd_pose is None:
+        return None
+    foot_serials = {tracker.serial for tracker in selected_trackers}
+    hip_candidates = [
+        device
+        for device in devices
+        if device.device_class_name == "GenericTracker"
+        and device.serial not in foot_serials
+    ]
+    if not hip_candidates:
+        return hmd_pose.position
+    hip = max(hip_candidates, key=lambda device: device.position[1])
+    return hip.position
 
 
 def to_calibrated_local(
@@ -664,6 +706,36 @@ def _contact_load(
         progress = (tilt_deg - config.contact_tilt_full_load_deg) / tilt_span_deg
         tilt_load = 1.0 - _smoothstep(progress)
     return height_load * tilt_load
+
+
+def _balance_loads(
+    body_right_m: float,
+    body_forward_m: float,
+    foot_positions: dict[str, tuple[float, float]],
+    config: SkatingConfig,
+) -> dict[str, float]:
+    if not config.balance_load_enabled or len(foot_positions) <= 1:
+        return {serial: 1.0 for serial in foot_positions}
+    radius_sq_m = max(0.001, config.balance_load_radius_m) ** 2
+    weights: dict[str, float] = {}
+    for serial, (foot_right_m, foot_forward_m) in foot_positions.items():
+        distance_sq_m = (
+            (foot_right_m - body_right_m) ** 2
+            + (foot_forward_m - body_forward_m) ** 2
+        )
+        weights[serial] = 1.0 / (distance_sq_m + radius_sq_m)
+    total_weight = sum(weights.values())
+    if total_weight <= 0.0:
+        return {serial: 1.0 for serial in foot_positions}
+    foot_count = len(foot_positions)
+    return {
+        serial: _clamp(
+            foot_count * weight / total_weight,
+            config.balance_load_min,
+            config.balance_load_max,
+        )
+        for serial, weight in weights.items()
+    }
 
 
 def _update_landing_state(

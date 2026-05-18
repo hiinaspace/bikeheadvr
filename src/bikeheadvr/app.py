@@ -38,6 +38,7 @@ from .skating_estimation import (
     SkatingEstimate,
     SkatingEstimator,
     build_skating_calibration,
+    infer_skating_body_position,
 )
 from .skating_recording import SkatingRecordingWriter
 from .vr_runtime import (
@@ -70,6 +71,9 @@ class RuntimeOptions:
     skating_contact_full_load_m: float | None = None
     skating_contact_tilt_full_load_deg: float | None = None
     skating_contact_tilt_zero_load_deg: float | None = None
+    skating_balance_load_radius_m: float | None = None
+    skating_balance_load_min: float | None = None
+    skating_balance_load_max: float | None = None
     verbose: bool = False
     log_file: Path | None = None
 
@@ -137,6 +141,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skating-contact-full-load-m", type=float)
     parser.add_argument("--skating-contact-tilt-full-load-deg", type=float)
     parser.add_argument("--skating-contact-tilt-zero-load-deg", type=float)
+    parser.add_argument("--skating-balance-load-radius-m", type=float)
+    parser.add_argument("--skating-balance-load-min", type=float)
+    parser.add_argument("--skating-balance-load-max", type=float)
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args(argv)
 
@@ -188,6 +195,9 @@ def build_runtime_config(options: RuntimeOptions) -> AppConfig:
         "contact_full_load_m": options.skating_contact_full_load_m,
         "contact_tilt_full_load_deg": options.skating_contact_tilt_full_load_deg,
         "contact_tilt_zero_load_deg": options.skating_contact_tilt_zero_load_deg,
+        "balance_load_radius_m": options.skating_balance_load_radius_m,
+        "balance_load_min": options.skating_balance_load_min,
+        "balance_load_max": options.skating_balance_load_max,
     }
     active_skating_overrides = {
         key: value
@@ -363,9 +373,10 @@ def run_session(
                 skating_tracker_poses = runtime.get_raw_tracker_poses()
             device_poses: list[DevicePose] = []
             raw_to_standing = None
-            if skating_recorder is not None and _is_skating_mode(config):
+            if _is_skating_mode(config):
                 device_poses = runtime.get_raw_device_poses()
-                raw_to_standing = runtime.get_raw_zero_to_standing_transform()
+                if skating_recorder is not None:
+                    raw_to_standing = runtime.get_raw_zero_to_standing_transform()
             gaze_ray = _to_gaze_ray(hmd_pose)
             if hmd_pose is None:
                 if no_pose_started_at is None:
@@ -398,6 +409,11 @@ def run_session(
             selected_skating_trackers = infer_foot_trackers(
                 skating_tracker_poses,
                 config.tracker.required_feet_count,
+            )
+            skating_body_position = infer_skating_body_position(
+                skating_hmd_pose,
+                device_poses,
+                selected_skating_trackers,
             )
             calibration_pose = (
                 skating_hmd_pose if _is_skating_mode(config) else hmd_pose
@@ -618,6 +634,7 @@ def run_session(
                     calibration_status.active,
                     output_hmd_pose=skating_output_hmd_pose,
                     output_calibrated_yaw_deg=skating_output_yaw_deg,
+                    body_position=skating_body_position,
                 )
                 osc.clear_turn()
                 if options.skating_record_only:
@@ -802,6 +819,9 @@ def cli_main(argv: list[str] | None = None) -> int:
         skating_contact_tilt_zero_load_deg=(
             args.skating_contact_tilt_zero_load_deg
         ),
+        skating_balance_load_radius_m=args.skating_balance_load_radius_m,
+        skating_balance_load_min=args.skating_balance_load_min,
+        skating_balance_load_max=args.skating_balance_load_max,
         verbose=args.verbose,
     )
     return run_session(options)
@@ -1133,6 +1153,7 @@ def _update_skating_drive(
     *,
     output_hmd_pose: HmdPose | None = None,
     output_calibrated_yaw_deg: float | None = None,
+    body_position: tuple[float, float, float] | None = None,
 ) -> SkatingEstimate:
     if not controls_visible or calibration_active:
         skating_estimator.reset()
@@ -1143,6 +1164,7 @@ def _update_skating_drive(
         trackers,
         output_hmd_pose=output_hmd_pose,
         output_calibrated_yaw_deg=output_calibrated_yaw_deg,
+        body_position=body_position,
     )
 
 
@@ -1256,7 +1278,7 @@ def _update_skating_foot_overlays(
             runtime,
             foot_overlay,
             grounded=foot_estimate.grounded,
-            contact_load=foot_estimate.contact_load,
+            contact_load=foot_estimate.force_load,
             texture_cache=texture_cache,
         )
         runtime.update_overlay_placement(

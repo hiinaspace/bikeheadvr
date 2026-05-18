@@ -11,6 +11,7 @@ from .skating_estimation import (
     SkatingCalibrationModel,
     SkatingEstimate,
     SkatingEstimator,
+    infer_skating_body_position,
 )
 from .vr_runtime import DevicePose, HmdPose, Matrix34Rows, TrackerPose
 
@@ -220,10 +221,16 @@ def replay_skating_recording(
         if len(selected_trackers) < resolved_tracker_config.required_feet_count:
             selected_trackers = trackers
         hmd_pose = hmd_pose_from_dict(hmd_record)
+        body_position = infer_skating_body_position(
+            hmd_pose,
+            devices,
+            selected_trackers,
+        )
         estimate = estimator.update(
             float(record["relative_s"]),
             hmd_pose,
             selected_trackers,
+            body_position=body_position,
         )
         recorded_estimate = (
             skating_estimate_from_dict(record["estimate"])
@@ -438,6 +445,8 @@ def skating_estimate_to_dict(estimate: SkatingEstimate) -> dict[str, Any]:
                 "grounded": foot.grounded,
                 "contact_load": foot.contact_load,
                 "skate_yaw_deg": foot.skate_yaw_deg,
+                "balance_load": foot.balance_load,
+                "force_load": foot.force_load,
                 "tilt_deg": foot.tilt_deg,
                 "force_right_m_s2": foot.force_right_m_s2,
                 "force_forward_m_s2": foot.force_forward_m_s2,
@@ -470,6 +479,10 @@ def skating_estimate_from_dict(raw: dict[str, Any]) -> SkatingEstimate:
                 grounded=bool(foot["grounded"]),
                 contact_load=float(foot["contact_load"]),
                 skate_yaw_deg=float(foot["skate_yaw_deg"]),
+                balance_load=float(foot.get("balance_load", 1.0)),
+                force_load=float(
+                    foot.get("force_load", foot.get("contact_load", 0.0))
+                ),
                 tilt_deg=float(foot.get("tilt_deg", 0.0)),
                 force_right_m_s2=float(foot.get("force_right_m_s2", 0.0)),
                 force_forward_m_s2=float(foot.get("force_forward_m_s2", 0.0)),

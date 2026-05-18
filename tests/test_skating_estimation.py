@@ -8,10 +8,11 @@ from bikeheadvr.config import SkatingConfig, TrackerConfig
 from bikeheadvr.skating_estimation import (
     SkatingEstimator,
     build_skating_calibration,
+    infer_skating_body_position,
     map_local_velocity_to_axes,
     tracker_tilt_deg,
 )
-from bikeheadvr.vr_runtime import HmdPose, TrackerPose
+from bikeheadvr.vr_runtime import DevicePose, HmdPose, TrackerPose
 
 
 def hmd(yaw_deg: float = 0.0, y_m: float = 1.7) -> HmdPose:
@@ -198,6 +199,23 @@ def default_feet(yaw_deg: float = 0.0) -> list[TrackerPose]:
     ]
 
 
+def device(
+    serial: str,
+    y_m: float,
+    device_class_name: str = "GenericTracker",
+) -> DevicePose:
+    return DevicePose(
+        device_index=10,
+        serial=serial,
+        device_class=3,
+        device_class_name=device_class_name,
+        controller_role=0,
+        controller_role_name="Invalid",
+        position=(0.1, y_m, -0.2),
+        orientation=orientation_from_yaw(0.0),
+    )
+
+
 def calibrated_estimator(
     config: SkatingConfig | None = None,
     feet: list[TrackerPose] | None = None,
@@ -352,6 +370,50 @@ def test_tilted_grounded_foot_has_reduced_contact_load() -> None:
     assert 0.0 < tilted_estimate.feet["left"].contact_load < 1.0
     assert tilted_estimate.feet["left"].tilt_deg == pytest.approx(30.0)
     assert tilted_estimate.velocity_forward_m_s > flat_estimate.velocity_forward_m_s
+
+
+def test_balance_load_shifts_toward_body_center() -> None:
+    estimator = calibrated_estimator(
+        config=SkatingConfig(
+            coast_drag_per_s=0.0,
+            longitudinal_drag_per_s=0.1,
+            lateral_drag_per_s=5.0,
+            angular_drag_per_s=0.0,
+            torque_gain_per_s=5.0,
+            balance_load_radius_m=0.3,
+            balance_load_min=0.2,
+            balance_load_max=1.6,
+        )
+    )
+    warm_contact(estimator, default_feet())
+
+    estimate = estimator.update(
+        0.2,
+        hmd(),
+        default_feet(),
+        body_position=(0.2, 1.0, 0.0),
+    )
+
+    assert estimate.feet["right"].balance_load > 1.0
+    assert estimate.feet["left"].balance_load < 1.0
+    assert estimate.feet["right"].force_load > estimate.feet["left"].force_load
+
+
+def test_hip_tracker_is_preferred_body_position() -> None:
+    feet = default_feet()
+
+    position = infer_skating_body_position(
+        hmd(),
+        [
+            device("left", 0.0),
+            device("right", 0.0),
+            device("hip", 0.9),
+            device("controller", 1.2, "Controller"),
+        ],
+        feet,
+    )
+
+    assert position == pytest.approx((0.1, 0.9, -0.2))
 
 
 def test_tracker_tilt_ignores_flat_yaw_rotation() -> None:

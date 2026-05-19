@@ -1,7 +1,7 @@
 [project]
 name = "bikeheadvr"
-version = "0.1.2"
-description = "SteamVR overlay prototype for controllerless VRChat bike locomotion"
+version = "0.2.0"
+description = "SteamVR overlay prototype for controllerless VRChat locomotion"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

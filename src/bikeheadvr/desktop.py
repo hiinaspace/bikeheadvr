@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QSystemTrayIcon,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -117,6 +118,8 @@ class EngineController(QObject):
 
 
 class MainWindow(QMainWindow):
+    quit_requested = Signal()
+
     def __init__(
         self,
         controller: EngineController,
@@ -130,6 +133,8 @@ class MainWindow(QMainWindow):
         self._warning_text = load_result.warning
         self._close_to_tray_notified = False
         self._is_exiting = False
+        self._applying_settings = False
+        self._running_locomotion_mode: str | None = None
 
         self.setWindowTitle("bikeheadvr")
         self.setMinimumWidth(360)
@@ -144,21 +149,58 @@ class MainWindow(QMainWindow):
         self.warning_label.setVisible(False)
         root_layout.addWidget(self.warning_label)
 
-        mode_box = QGroupBox("Locomotion mode")
-        mode_layout = QVBoxLayout()
-        mode_box.setLayout(mode_layout)
+        self.mode_tabs = QTabWidget()
+        self.bike_tab = QWidget(self)
+        bike_layout = QVBoxLayout()
+        self.bike_tab.setLayout(bike_layout)
+
+        bike_mode_box = QGroupBox("Bike control")
+        bike_mode_layout = QVBoxLayout()
+        bike_mode_box.setLayout(bike_mode_layout)
         self.manual_radio = QRadioButton("Manual")
         self.tracker_radio = QRadioButton("Tracker")
         self.mode_group = QButtonGroup(self)
         self.mode_group.addButton(self.manual_radio)
         self.mode_group.addButton(self.tracker_radio)
-        mode_layout.addWidget(self.manual_radio)
-        mode_layout.addWidget(self.tracker_radio)
-        root_layout.addWidget(mode_box)
+        bike_mode_layout.addWidget(self.manual_radio)
+        bike_mode_layout.addWidget(self.tracker_radio)
+        bike_layout.addWidget(bike_mode_box)
 
         self.pedal_checkbox = QCheckBox("Pedal calibration on startup")
+        bike_layout.addWidget(self.pedal_checkbox)
+        bike_layout.addStretch(1)
+
+        self.skating_tab = QWidget(self)
+        skating_layout = QVBoxLayout()
+        self.skating_tab.setLayout(skating_layout)
+        self.skating_turn_checkbox = QCheckBox("Enable playspace turning")
+        self.skating_turn_checkbox.setToolTip(
+            "Uses skate roll while moving to yaw the SteamVR playspace. "
+            "Leave off if you are sensitive to smooth turning."
+        )
+        self.skating_turn_warning_label = QLabel(
+            "May cause more motion sickness than straight skating."
+        )
+        self.skating_turn_warning_label.setWordWrap(True)
+        self.skating_debug_checkbox = QCheckBox("Show diagnostic overlays")
+        self.skating_debug_checkbox.setToolTip(
+            "Shows foot contact indicators and the ghost COM/force debug view."
+        )
+        skating_layout.addWidget(self.skating_turn_checkbox)
+        skating_layout.addWidget(self.skating_turn_warning_label)
+        skating_layout.addWidget(self.skating_debug_checkbox)
+        skating_layout.addStretch(1)
+
+        self.mode_tabs.addTab(self.bike_tab, "Bike")
+        self.mode_tabs.addTab(self.skating_tab, "Skating")
+        root_layout.addWidget(self.mode_tabs)
+
+        self.mode_locked_label = QLabel("Stop overlay to switch modes.")
+        self.mode_locked_label.setWordWrap(True)
+        self.mode_locked_label.setVisible(False)
+        root_layout.addWidget(self.mode_locked_label)
+
         self.verbose_checkbox = QCheckBox("Verbose logging")
-        root_layout.addWidget(self.pedal_checkbox)
         root_layout.addWidget(self.verbose_checkbox)
 
         status_box = QGroupBox("Status")
@@ -183,16 +225,22 @@ class MainWindow(QMainWindow):
         button_row.addStretch(1)
         self.start_stop_button = QPushButton("Start")
         self.hide_button = QPushButton("Hide to tray")
+        self.quit_button = QPushButton("Quit")
         button_row.addWidget(self.hide_button)
+        button_row.addWidget(self.quit_button)
         button_row.addWidget(self.start_stop_button)
         root_layout.addLayout(button_row)
 
         self.manual_radio.toggled.connect(self._handle_settings_changed)
         self.tracker_radio.toggled.connect(self._handle_settings_changed)
+        self.mode_tabs.currentChanged.connect(self._handle_settings_changed)
         self.pedal_checkbox.toggled.connect(self._handle_settings_changed)
+        self.skating_turn_checkbox.toggled.connect(self._handle_settings_changed)
+        self.skating_debug_checkbox.toggled.connect(self._handle_settings_changed)
         self.verbose_checkbox.toggled.connect(self._handle_settings_changed)
         self.start_stop_button.clicked.connect(self._toggle_runtime)
         self.hide_button.clicked.connect(self.hide_to_tray)
+        self.quit_button.clicked.connect(self.quit_requested.emit)
 
         controller.status_changed.connect(self._update_status)
         controller.running_changed.connect(self._handle_running_changed)
@@ -207,8 +255,10 @@ class MainWindow(QMainWindow):
 
     def current_settings(self) -> DesktopSettings:
         return DesktopSettings(
-            locomotion_mode="tracker" if self.tracker_radio.isChecked() else "manual",
+            locomotion_mode=self._selected_locomotion_mode(),
             pedal_calibration_enabled=self.pedal_checkbox.isChecked(),
+            skating_playspace_turn_enabled=self.skating_turn_checkbox.isChecked(),
+            skating_debug_overlays_enabled=self.skating_debug_checkbox.isChecked(),
             verbose_logging=self.verbose_checkbox.isChecked(),
             start_minimized=self._settings.start_minimized,
         )
@@ -237,23 +287,42 @@ class MainWindow(QMainWindow):
             self.hide_to_tray()
 
     def _apply_settings_to_widgets(self) -> None:
-        if self._settings.locomotion_mode == "tracker":
+        self._applying_settings = True
+        if self._settings.locomotion_mode == "skating":
+            self.manual_radio.setChecked(True)
+            self.mode_tabs.setCurrentWidget(self.skating_tab)
+        elif self._settings.locomotion_mode == "tracker":
             self.tracker_radio.setChecked(True)
+            self.mode_tabs.setCurrentWidget(self.bike_tab)
         else:
             self.manual_radio.setChecked(True)
+            self.mode_tabs.setCurrentWidget(self.bike_tab)
         self.pedal_checkbox.setChecked(self._settings.pedal_calibration_enabled)
+        self.skating_turn_checkbox.setChecked(
+            self._settings.skating_playspace_turn_enabled
+        )
+        self.skating_debug_checkbox.setChecked(
+            self._settings.skating_debug_overlays_enabled
+        )
         self.verbose_checkbox.setChecked(self._settings.verbose_logging)
+        self._applying_settings = False
+        self._sync_mode_options_enabled()
 
     def _handle_settings_changed(self) -> None:
+        if self._applying_settings:
+            return
+        if self._controller.is_running():
+            self._sync_mode_options_enabled()
+            return
         self._settings = self.current_settings()
+        self._sync_mode_options_enabled()
         save_settings(self._settings)
 
     def _handle_running_changed(self, running: bool) -> None:
+        if not running:
+            self._running_locomotion_mode = None
         self.start_stop_button.setText("Stop" if running else "Start")
-        self.manual_radio.setEnabled(not running)
-        self.tracker_radio.setEnabled(not running)
-        self.pedal_checkbox.setEnabled(not running)
-        self.verbose_checkbox.setEnabled(not running)
+        self._sync_mode_options_enabled()
         if not running and self.status_label.text() == "Running":
             self.status_label.setText("Stopped")
 
@@ -264,9 +333,14 @@ class MainWindow(QMainWindow):
 
         self._settings = self.current_settings()
         save_settings(self._settings)
+        self._running_locomotion_mode = self._settings.locomotion_mode
         started = self._controller.start(self._settings)
         if started:
             self._update_status("starting", "Starting runtime...")
+            self._sync_mode_options_enabled()
+        else:
+            self._running_locomotion_mode = None
+            self._sync_mode_options_enabled()
 
     def _update_status(self, state: str, message: str) -> None:
         if state == "running":
@@ -280,6 +354,28 @@ class MainWindow(QMainWindow):
         elif state == "stopped":
             self.status_label.setText("Stopped")
         self.detail_label.setText(message)
+
+    def _selected_locomotion_mode(self) -> str:
+        if self.mode_tabs.currentWidget() == self.skating_tab:
+            return "skating"
+        if self.tracker_radio.isChecked():
+            return "tracker"
+        return "manual"
+
+    def _sync_mode_options_enabled(self) -> None:
+        enabled = not self._controller.is_running()
+        self.manual_radio.setEnabled(enabled)
+        self.tracker_radio.setEnabled(enabled)
+        self.pedal_checkbox.setEnabled(enabled)
+        self.skating_turn_checkbox.setEnabled(enabled)
+        self.skating_debug_checkbox.setEnabled(enabled)
+        self.verbose_checkbox.setEnabled(enabled)
+        mode_switch_pending = (
+            not enabled
+            and self._running_locomotion_mode is not None
+            and self._selected_locomotion_mode() != self._running_locomotion_mode
+        )
+        self.mode_locked_label.setVisible(mode_switch_pending)
 
 
 def create_tray_icon(
@@ -333,6 +429,7 @@ def main(argv: list[str] | None = None) -> int:
         tray_icon.hide()
         app.quit()
 
+    window.quit_requested.connect(exit_app)
     exit_action.triggered.connect(exit_app)
     tray_icon.activated.connect(
         lambda reason: (

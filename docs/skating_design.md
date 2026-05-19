@@ -16,7 +16,8 @@ forgiving locomotion estimator:
 - high resistance perpendicular to the wheel axis
 - foot pushes produce acceleration
 - sideways skates brake
-- foot yaw and COM offset produce torque
+- foot yaw changes the rolling/braking axis
+- foot roll can optionally steer the playspace while the skater is moving
 - touchdown and small yaw errors are softened because there is no force feedback
 
 ## Current Assumptions
@@ -24,12 +25,12 @@ forgiving locomotion estimator:
 - The two lowest generic trackers are the feet.
 - Trackers are mounted on top of the feet, so tracker height and tilt are
   approximate contact/load signals rather than exact wheel contact.
-- The HMD XZ position is currently the body/COM proxy. Hip tracker support is a
-  likely improvement, but not required for the current prototype.
+- The highest non-foot generic tracker is treated as a hip/COM proxy when
+  present; otherwise the HMD XZ position is used.
 - VRChat joystick movement is understood well enough to keep as the output
   frame: horizontal/vertical axes are interpreted relative to VRChat/HMD facing.
 - VRChat smooth turn is out of scope for skating tests. The intended turn input
-  is physical body/skate turning.
+  is physical body/skate movement, with optional playspace yaw from foot roll.
 - OSCQuery/VRChat velocity feedback is useful for diagnostics at most. It is not
   currently part of the control loop because world settings, collisions, slopes,
   and gravity add noise.
@@ -52,7 +53,8 @@ height, overlay placement, and user-facing debug should be explicit about which
 up vector/frame they use.
 
 Current skating calibration, foot selection, foot velocities, skate yaw, contact
-load, force, torque, and JSONL pose recording use raw OpenVR poses.
+load, roll steering, force estimation, and JSONL pose recording use raw OpenVR
+poses.
 
 ### Standing/Chaperone Frame
 
@@ -78,20 +80,22 @@ The room-fixed frame after skating calibration:
   a fixed tracker-local axis. This avoids pitch/roll changing the apparent yaw
   when trackers are mounted yawed relative to the foot.
 
-Current estimator velocity, foot positions, forces, and torque are represented
-in this frame.
+Current estimator velocity, foot positions, force estimates, and steering state
+are represented in this frame.
 
 ### Virtual Skater Body Frame
 
 The simulated skater has:
 
 - velocity
-- yaw rate
+- yaw rate from optional roll steering
 - integrated `body_yaw`
 
 `body_yaw` is not the same as HMD yaw. It is the simulated body's orientation.
-If chaperone yaw turning is enabled, this virtual yaw is the candidate signal
-for rotating the standing space, but the sign and transform must be verified.
+If playspace turning is enabled, this virtual yaw rotates the SteamVR working
+standing space as an output transform. Physics remains anchored to raw tracking
+poses, and the raw HMD pivot is used when applying the yaw so the working
+chaperone transform does not feed back into itself.
 
 ### VRChat Input Frame
 
@@ -114,37 +118,44 @@ the estimator does not accidentally mix unrelated yaw frames.
 For each contacted foot:
 
 1. Convert foot pose and velocity to calibrated skate frame.
-2. Compute live skate yaw from tracker yaw minus calibration yaw offset.
+2. Compute live skate yaw from the calibrated tracker-local skate forward axis.
 3. Compute contact load from tracker height and tilt.
-4. Compute contact slip from simulated body velocity plus yaw-rate contact
-   velocity plus foot velocity.
-5. Apply low drag along the skate axis and high drag perpendicular to it.
-6. Scale passive braking down when the skate is nearly aligned with current
+4. Scale load with a conservative hip/HMD balance estimate.
+5. Compute contact slip from simulated body velocity plus foot velocity.
+6. Apply low drag along the skate axis and high drag perpendicular to it.
+7. Scale passive braking down when the skate is nearly aligned with current
    simulated velocity.
-7. Apply a short landing grace period after contact load returns.
-8. Accumulate force and torque.
+8. Apply landing and recovery-stroke relief so a returning foot does not erase
+   glide too aggressively.
+9. Accumulate force.
 
-Torque is computed from the COM-to-foot lever arm and the contact force.
+Roll steering is separate from contact-force torque:
+
+1. Read grounded skate roll relative to calibration.
+2. Apply deadzone, load, landing, and speed gates.
+3. Integrate the resulting yaw rate into `body_yaw`.
+4. If playspace turning is enabled, apply that yaw as a temporary OpenVR
+   working standing transform around the raw HMD pivot.
+
+The older COM-to-foot force torque path is still available for diagnostics but
+is disabled by default (`torque_gain_per_s = 0.0`). Live testing showed foot
+roll is a clearer steering intent signal for the current no-force-feedback
+prototype.
 
 ## Turning Intent
 
-In the ideal right-turn case:
+Yawing the feet changes the wheel axes and therefore changes which directions
+glide or brake. It does not directly rotate the playspace.
 
-1. The skater has forward velocity aligned with feet and body.
-2. The user yaws both feet to the right and shifts COM right.
-3. The wheel axes no longer align with velocity, so lateral slip appears.
-4. Anisotropic friction adds a rightward velocity component and a signed torque.
-5. The virtual body yaw rotates until the skate axes and velocity stop sliding.
-6. If chaperone yaw is enabled, the standing space should rotate as an output
-   presentation transform, while physics remains anchored to raw tracking.
-
-The unresolved design question is whether chaperone yaw should be enabled by
-default. It may make turning feel more physically coherent, but only after the
-physics input frame is insulated from chaperone edits.
+Rolling grounded skates around their wheel axis is the steering input. Steering
+only builds while the skater has simulated speed, which avoids smooth-turn drift
+while standing still. The desktop UI exposes this in the Skating tab as "Enable
+playspace turning" and leaves it off by default because it has more
+motion-sickness risk than straight joystick locomotion.
 
 ## Debug Visuals
 
-Skating mode has two debug layers:
+Skating mode has two opt-in debug layers:
 
 - foot quads at the actual tracker positions, colored by contact state/load
 - a ghost debug scene shifted forward from the headset
@@ -160,6 +171,9 @@ The ghost scene shows:
 
 This is intended to make force and yaw-frame problems visible without looking
 straight down at the user's real feet.
+
+The desktop UI exposes both layers in the Skating tab behind "Show diagnostic
+overlays", and the CLI exposes `--skating-debug-overlays`.
 
 ## Recording
 
@@ -182,7 +196,8 @@ the current `raw_to_standing` 3x4 transform when SteamVR provides it.
 - Contact height/load currently uses raw-frame tracker Y. If raw Y differs
   noticeably from standing gravity/up on a given SteamVR setup, contact may need
   a separate standing-up or baseline-up projection.
-- COM is HMD XZ, not hip/weighted body center.
+- COM is still an estimate. The hip tracker is preferred when available, but it
+  is not a real weighted body center.
 - Contact load is inferred from tracker height and tilt, not true normal force.
 - Per-foot force is also scaled by a conservative balance-load estimate. The app
   uses the highest non-foot generic tracker as a hip/COM proxy when available,
@@ -194,6 +209,6 @@ the current `raw_to_standing` 3x4 transform when SteamVR provides it.
   have clean braking recordings.
 - Foot trackers do not provide force feedback, so passive braking requires
   generous slop.
-- Chaperone-yaw turning is still experimental. Physics is now insulated from
-  standing-frame yaw edits, but the output transform and turn feedback loop still
-  need live verification.
+- Playspace-yaw turning is still opt-in. Physics is insulated from
+  standing-frame yaw edits, and the output transform has safety clamps, but this
+  can still be more uncomfortable than straight skating.

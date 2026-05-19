@@ -35,11 +35,13 @@ def test_load_defaults_when_missing(settings_dir: Path) -> None:
 
 def test_load_partial_config_uses_defaults(settings_dir: Path) -> None:
     path = settings_dir / "config.toml"
-    path.write_text('locomotion_mode = "tracker"\n', encoding="utf-8")
+    path.write_text('locomotion_mode = "skating"\n', encoding="utf-8")
     result = load_settings(path)
     assert result.settings == DesktopSettings(
-        locomotion_mode="tracker",
+        locomotion_mode="skating",
         pedal_calibration_enabled=False,
+        skating_playspace_turn_enabled=False,
+        skating_debug_overlays_enabled=False,
         verbose_logging=False,
         start_minimized=False,
     )
@@ -55,8 +57,10 @@ def test_load_malformed_config_returns_warning(settings_dir: Path) -> None:
 
 def test_save_and_reload_round_trips(settings_dir: Path) -> None:
     settings = DesktopSettings(
-        locomotion_mode="tracker",
+        locomotion_mode="skating",
         pedal_calibration_enabled=True,
+        skating_playspace_turn_enabled=True,
+        skating_debug_overlays_enabled=True,
         verbose_logging=True,
         start_minimized=True,
     )
@@ -68,13 +72,17 @@ def test_save_and_reload_round_trips(settings_dir: Path) -> None:
 
 def test_runtime_options_mapping() -> None:
     settings = DesktopSettings(
-        locomotion_mode="tracker",
+        locomotion_mode="skating",
         pedal_calibration_enabled=True,
+        skating_playspace_turn_enabled=True,
+        skating_debug_overlays_enabled=True,
         verbose_logging=True,
     )
     options = settings.to_runtime_options(log_file=Path("bikeheadvr.log"))
-    assert options.locomotion_mode == "tracker"
+    assert options.locomotion_mode == "skating"
     assert options.pedal_calibration is True
+    assert options.skating_playspace_turn is True
+    assert options.skating_debug_overlays is True
     assert options.verbose is True
     assert options.log_file == Path("bikeheadvr.log")
 

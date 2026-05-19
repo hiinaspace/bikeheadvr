@@ -20,6 +20,8 @@ LOG_FILE_NAME = "bikeheadvr.log"
 class DesktopSettings:
     locomotion_mode: str = "manual"
     pedal_calibration_enabled: bool = False
+    skating_playspace_turn_enabled: bool = False
+    skating_debug_overlays_enabled: bool = False
     verbose_logging: bool = False
     start_minimized: bool = False
 
@@ -27,6 +29,8 @@ class DesktopSettings:
         return RuntimeOptions(
             locomotion_mode=self.locomotion_mode,
             pedal_calibration=self.pedal_calibration_enabled,
+            skating_playspace_turn=self.skating_playspace_turn_enabled,
+            skating_debug_overlays=self.skating_debug_overlays_enabled,
             verbose=self.verbose_logging,
             log_file=log_file,
         )
@@ -74,7 +78,7 @@ def load_settings(path: Path | None = None) -> LoadResult:
         )
 
     locomotion_mode = raw.get("locomotion_mode", defaults.locomotion_mode)
-    if locomotion_mode not in {"manual", "tracker"}:
+    if locomotion_mode not in {"manual", "tracker", "skating"}:
         locomotion_mode = defaults.locomotion_mode
 
     return LoadResult(
@@ -84,6 +88,18 @@ def load_settings(path: Path | None = None) -> LoadResult:
                 raw.get(
                     "pedal_calibration_enabled",
                     defaults.pedal_calibration_enabled,
+                )
+            ),
+            skating_playspace_turn_enabled=_coerce_bool(
+                raw.get(
+                    "skating_playspace_turn_enabled",
+                    defaults.skating_playspace_turn_enabled,
+                )
+            ),
+            skating_debug_overlays_enabled=_coerce_bool(
+                raw.get(
+                    "skating_debug_overlays_enabled",
+                    defaults.skating_debug_overlays_enabled,
                 )
             ),
             verbose_logging=_coerce_bool(
@@ -113,6 +129,8 @@ def _serialize_settings(settings: DesktopSettings) -> str:
     lines = [
         f'locomotion_mode = "{settings.locomotion_mode}"',
         f"pedal_calibration_enabled = {_format_bool(settings.pedal_calibration_enabled)}",
+        f"skating_playspace_turn_enabled = {_format_bool(settings.skating_playspace_turn_enabled)}",
+        f"skating_debug_overlays_enabled = {_format_bool(settings.skating_debug_overlays_enabled)}",
         f"verbose_logging = {_format_bool(settings.verbose_logging)}",
         f"start_minimized = {_format_bool(settings.start_minimized)}",
         "",

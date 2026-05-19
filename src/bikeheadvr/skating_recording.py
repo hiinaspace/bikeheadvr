@@ -153,9 +153,7 @@ class SkatingRecordingWriter:
                 "raw_to_standing": matrix34_rows_to_dict(raw_to_standing),
                 "hmd": None if hmd_pose is None else hmd_pose_to_dict(hmd_pose),
                 "trackers": [tracker_pose_to_dict(tracker) for tracker in trackers],
-                "devices": [
-                    device_pose_to_dict(device) for device in (devices or [])
-                ],
+                "devices": [device_pose_to_dict(device) for device in (devices or [])],
                 "selected_tracker_serials": [
                     tracker.serial for tracker in selected_trackers
                 ],
@@ -241,9 +239,7 @@ def replay_skating_recording(
             SkatingReplaySample(
                 relative_s=float(record["relative_s"]),
                 segment_id=_optional_int(record.get("segment_id")),
-                segment_relative_s=_optional_float(
-                    record.get("segment_relative_s")
-                ),
+                segment_relative_s=_optional_float(record.get("segment_relative_s")),
                 hmd_pose=hmd_pose,
                 trackers=selected_trackers,
                 devices=devices,
@@ -438,6 +434,9 @@ def skating_estimate_to_dict(estimate: SkatingEstimate) -> dict[str, Any]:
         "speed_m_s": estimate.speed_m_s,
         "body_yaw_deg": estimate.body_yaw_deg,
         "yaw_rate_deg_s": estimate.yaw_rate_deg_s,
+        "steering_roll_deg": estimate.steering_roll_deg,
+        "steering_input": estimate.steering_input,
+        "steering_yaw_rate_deg_s": estimate.steering_yaw_rate_deg_s,
         "crouch_m": estimate.crouch_m,
         "trackers_ready": estimate.trackers_ready,
         "trackers_visible": estimate.trackers_visible,
@@ -449,10 +448,13 @@ def skating_estimate_to_dict(estimate: SkatingEstimate) -> dict[str, Any]:
                 "grounded": foot.grounded,
                 "contact_load": foot.contact_load,
                 "skate_yaw_deg": foot.skate_yaw_deg,
+                "skate_roll_deg": foot.skate_roll_deg,
                 "balance_load": foot.balance_load,
                 "force_load": foot.force_load,
                 "recovery_scale": foot.recovery_scale,
                 "glide_preserve_scale": foot.glide_preserve_scale,
+                "steering_input": foot.steering_input,
+                "steering_load": foot.steering_load,
                 "tilt_deg": foot.tilt_deg,
                 "force_right_m_s2": foot.force_right_m_s2,
                 "force_forward_m_s2": foot.force_forward_m_s2,
@@ -474,6 +476,9 @@ def skating_estimate_from_dict(raw: dict[str, Any]) -> SkatingEstimate:
         speed_m_s=float(raw["speed_m_s"]),
         body_yaw_deg=float(raw["body_yaw_deg"]),
         yaw_rate_deg_s=float(raw["yaw_rate_deg_s"]),
+        steering_roll_deg=float(raw.get("steering_roll_deg", 0.0)),
+        steering_input=float(raw.get("steering_input", 0.0)),
+        steering_yaw_rate_deg_s=float(raw.get("steering_yaw_rate_deg_s", 0.0)),
         crouch_m=float(raw["crouch_m"]),
         trackers_ready=bool(raw["trackers_ready"]),
         trackers_visible=int(raw["trackers_visible"]),
@@ -485,12 +490,13 @@ def skating_estimate_from_dict(raw: dict[str, Any]) -> SkatingEstimate:
                 grounded=bool(foot["grounded"]),
                 contact_load=float(foot["contact_load"]),
                 skate_yaw_deg=float(foot["skate_yaw_deg"]),
+                skate_roll_deg=float(foot.get("skate_roll_deg", 0.0)),
                 balance_load=float(foot.get("balance_load", 1.0)),
-                force_load=float(
-                    foot.get("force_load", foot.get("contact_load", 0.0))
-                ),
+                force_load=float(foot.get("force_load", foot.get("contact_load", 0.0))),
                 recovery_scale=float(foot.get("recovery_scale", 1.0)),
                 glide_preserve_scale=float(foot.get("glide_preserve_scale", 1.0)),
+                steering_input=float(foot.get("steering_input", 0.0)),
+                steering_load=float(foot.get("steering_load", 0.0)),
                 tilt_deg=float(foot.get("tilt_deg", 0.0)),
                 force_right_m_s2=float(foot.get("force_right_m_s2", 0.0)),
                 force_forward_m_s2=float(foot.get("force_forward_m_s2", 0.0)),
@@ -503,15 +509,16 @@ def skating_estimate_from_dict(raw: dict[str, Any]) -> SkatingEstimate:
 
 def _load_config_from_recording(path: Path) -> SkatingConfig | None:
     for record in load_skating_records(path):
-        if record.get("type") == "meta" and isinstance(record.get("skating_config"), dict):
+        if record.get("type") == "meta" and isinstance(
+            record.get("skating_config"), dict
+        ):
             return SkatingConfig(**record["skating_config"])
     return None
 
 
 def _skating_config_to_dict(config: SkatingConfig) -> dict[str, Any]:
     return {
-        field: getattr(config, field)
-        for field in SkatingConfig.__dataclass_fields__
+        field: getattr(config, field) for field in SkatingConfig.__dataclass_fields__
     }
 
 

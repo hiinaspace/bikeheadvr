@@ -45,6 +45,7 @@ from .vr_runtime import (
     DevicePose,
     GazeRay,
     HmdPose,
+    Matrix34Rows,
     OverlayHandle,
     OverlayIntersection,
     RuntimeInitError,
@@ -62,6 +63,7 @@ class RuntimeOptions:
     locomotion_mode: str = "manual"
     pedal_calibration: bool = False
     skating_playspace_turn: bool = False
+    skating_debug_overlays: bool | None = None
     skating_record_only: bool = False
     skating_record_path: Path | None = None
     skating_push_yaw_gain: float | None = None
@@ -76,6 +78,16 @@ class RuntimeOptions:
     skating_balance_load_max: float | None = None
     skating_recovery_relief_min_scale: float | None = None
     skating_forward_glide_preserve_min_scale: float | None = None
+    skating_stop_snap_speed_m_s: float | None = None
+    skating_stop_snap_hold_s: float | None = None
+    skating_reorientation_recovery_speed_m_s: float | None = None
+    skating_reorientation_recovery_max_foot_speed_m_s: float | None = None
+    skating_reorientation_recovery_perp_scale: float | None = None
+    skating_steering_roll_sign: float | None = None
+    skating_steering_roll_deadzone_deg: float | None = None
+    skating_steering_roll_full_deg: float | None = None
+    skating_steering_min_speed_m_s: float | None = None
+    skating_steering_yaw_rate_deg_s: float | None = None
     verbose: bool = False
     log_file: Path | None = None
 
@@ -87,6 +99,19 @@ class RuntimeStatus:
 
 
 StatusCallback = Callable[[RuntimeStatus], None]
+
+
+def _skating_status_suffix(config: AppConfig, options: RuntimeOptions) -> str:
+    if config.locomotion_mode != "skating":
+        return ""
+
+    turning = "on" if options.skating_playspace_turn else "off"
+    overlays_enabled = (
+        config.skating.debug_foot_overlay_enabled
+        or config.skating.debug_ghost_overlay_enabled
+    )
+    overlays = "on" if overlays_enabled else "off"
+    return f" Playspace turning: {turning}. Debug overlays: {overlays}."
 
 
 @dataclass
@@ -131,6 +156,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skating-playspace-turn", action="store_true")
     parser.add_argument("--no-skating-playspace-turn", action="store_true")
     parser.add_argument(
+        "--skating-debug-overlays",
+        dest="skating_debug_overlays",
+        action="store_true",
+        default=None,
+        help="Show skating foot and ghost diagnostic overlays.",
+    )
+    parser.add_argument(
+        "--no-skating-debug-overlays",
+        dest="skating_debug_overlays",
+        action="store_false",
+        help="Hide skating foot and ghost diagnostic overlays.",
+    )
+    parser.add_argument(
         "--skating-record-only",
         action="store_true",
         help="Run skating estimation and recording without sending VRChat motion or chaperone yaw.",
@@ -148,6 +186,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skating-balance-load-max", type=float)
     parser.add_argument("--skating-recovery-relief-min-scale", type=float)
     parser.add_argument("--skating-forward-glide-preserve-min-scale", type=float)
+    parser.add_argument("--skating-stop-snap-speed-m-s", type=float)
+    parser.add_argument("--skating-stop-snap-hold-s", type=float)
+    parser.add_argument("--skating-reorientation-recovery-speed-m-s", type=float)
+    parser.add_argument(
+        "--skating-reorientation-recovery-max-foot-speed-m-s",
+        type=float,
+    )
+    parser.add_argument("--skating-reorientation-recovery-perp-scale", type=float)
+    parser.add_argument("--skating-steering-roll-sign", type=float)
+    parser.add_argument("--skating-steering-roll-deadzone-deg", type=float)
+    parser.add_argument("--skating-steering-roll-full-deg", type=float)
+    parser.add_argument("--skating-steering-min-speed-m-s", type=float)
+    parser.add_argument("--skating-steering-yaw-rate-deg-s", type=float)
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args(argv)
 
@@ -193,6 +244,12 @@ def build_runtime_config(options: RuntimeOptions) -> AppConfig:
             skating_config,
             tracker_velocity_blend=options.skating_tracker_velocity_blend,
         )
+    if options.skating_debug_overlays is not None:
+        skating_config = replace(
+            skating_config,
+            debug_foot_overlay_enabled=options.skating_debug_overlays,
+            debug_ghost_overlay_enabled=options.skating_debug_overlays,
+        )
     skating_overrides = {
         "contact_enter_m": options.skating_contact_enter_m,
         "contact_leave_m": options.skating_contact_leave_m,
@@ -206,11 +263,25 @@ def build_runtime_config(options: RuntimeOptions) -> AppConfig:
         "forward_glide_preserve_min_scale": (
             options.skating_forward_glide_preserve_min_scale
         ),
+        "stop_snap_speed_m_s": options.skating_stop_snap_speed_m_s,
+        "stop_snap_hold_s": options.skating_stop_snap_hold_s,
+        "reorientation_recovery_speed_m_s": (
+            options.skating_reorientation_recovery_speed_m_s
+        ),
+        "reorientation_recovery_max_foot_speed_m_s": (
+            options.skating_reorientation_recovery_max_foot_speed_m_s
+        ),
+        "reorientation_recovery_perp_scale": (
+            options.skating_reorientation_recovery_perp_scale
+        ),
+        "steering_roll_sign": options.skating_steering_roll_sign,
+        "steering_roll_deadzone_deg": options.skating_steering_roll_deadzone_deg,
+        "steering_roll_full_deg": options.skating_steering_roll_full_deg,
+        "steering_min_speed_m_s": options.skating_steering_min_speed_m_s,
+        "steering_yaw_rate_deg_s": options.skating_steering_yaw_rate_deg_s,
     }
     active_skating_overrides = {
-        key: value
-        for key, value in skating_overrides.items()
-        if value is not None
+        key: value for key, value in skating_overrides.items() if value is not None
     }
     if active_skating_overrides:
         skating_config = replace(skating_config, **active_skating_overrides)
@@ -360,6 +431,7 @@ def run_session(
             (
                 "Running in "
                 f"{config.locomotion_mode} mode. Dwell on toggle to calibrate."
+                f"{_skating_status_suffix(config, options)}"
             ),
         )
 
@@ -383,8 +455,7 @@ def run_session(
             raw_to_standing = None
             if _is_skating_mode(config):
                 device_poses = runtime.get_raw_device_poses()
-                if skating_recorder is not None:
-                    raw_to_standing = runtime.get_raw_zero_to_standing_transform()
+                raw_to_standing = runtime.get_raw_zero_to_standing_transform()
             gaze_ray = _to_gaze_ray(hmd_pose)
             if hmd_pose is None:
                 if no_pose_started_at is None:
@@ -495,9 +566,7 @@ def run_session(
                             "Skating calibration completed "
                             f"for {len(skating_model.feet)} trackers.",
                         )
-                        height_warning = _skating_tracker_height_warning(
-                            skating_model
-                        )
+                        height_warning = _skating_tracker_height_warning(skating_model)
                         if height_warning is not None:
                             publish("info", height_warning)
                 else:
@@ -625,13 +694,11 @@ def run_session(
                 pedal_calibration_status.active or calibration_status.active
             )
             if _is_skating_mode(config):
-                skating_output_hmd_pose, skating_output_yaw_deg = (
-                    _skating_output_frame(
-                        runtime,
-                        skating_estimator.calibration,
-                        hmd_pose,
-                        skating_hmd_pose,
-                    )
+                skating_output_hmd_pose, skating_output_yaw_deg = _skating_output_frame(
+                    runtime,
+                    skating_estimator.calibration,
+                    hmd_pose,
+                    skating_hmd_pose,
                 )
                 skating_estimate = _update_skating_drive(
                     skating_estimator,
@@ -661,7 +728,8 @@ def run_session(
                     skating_foot_texture_cache,
                     skating_estimator.calibration,
                     skating_estimate,
-                    tracker_poses,
+                    skating_tracker_poses,
+                    raw_to_standing,
                     controls_visible and not calibration_status.active,
                 )
                 _update_skating_debug_overlays(
@@ -671,8 +739,9 @@ def run_session(
                     skating_debug_texture_cache,
                     skating_estimator.calibration,
                     skating_estimate,
-                    hmd_pose,
-                    tracker_poses,
+                    skating_hmd_pose,
+                    skating_tracker_poses,
+                    raw_to_standing,
                     controls_visible and not calibration_status.active,
                 )
                 if (
@@ -680,17 +749,22 @@ def run_session(
                     and not options.skating_record_only
                     and controls_visible
                     and hmd_pose is not None
+                    and skating_hmd_pose is not None
                     and not calibration_status.active
                 ):
-                    playspace_yaw_deg = skating_estimate.body_yaw_deg
+                    playspace_yaw_deg = _skating_playspace_yaw_offset_deg(
+                        runtime,
+                        skating_estimator.calibration,
+                        skating_estimate,
+                    )
                     if (
                         abs(playspace_yaw_deg)
                         < config.skating.playspace_yaw_deadzone_deg
                     ):
                         playspace_yaw_deg = 0.0
-                    runtime.apply_playspace_yaw_offset(
+                    runtime.apply_playspace_yaw_offset_from_raw_pivot(
                         playspace_yaw_deg,
-                        hmd_pose.position,
+                        skating_hmd_pose.position,
                     )
                 else:
                     runtime.restore_playspace_yaw()
@@ -811,9 +885,9 @@ def cli_main(argv: list[str] | None = None) -> int:
         locomotion_mode=args.locomotion_mode,
         pedal_calibration=args.pedal_calibration,
         skating_playspace_turn=(
-            args.skating_playspace_turn
-            and not args.no_skating_playspace_turn
+            args.skating_playspace_turn and not args.no_skating_playspace_turn
         ),
+        skating_debug_overlays=args.skating_debug_overlays,
         skating_record_only=args.skating_record_only,
         skating_record_path=args.skating_record_path,
         skating_push_yaw_gain=args.skating_push_yaw_gain,
@@ -821,12 +895,8 @@ def cli_main(argv: list[str] | None = None) -> int:
         skating_contact_enter_m=args.skating_contact_enter_m,
         skating_contact_leave_m=args.skating_contact_leave_m,
         skating_contact_full_load_m=args.skating_contact_full_load_m,
-        skating_contact_tilt_full_load_deg=(
-            args.skating_contact_tilt_full_load_deg
-        ),
-        skating_contact_tilt_zero_load_deg=(
-            args.skating_contact_tilt_zero_load_deg
-        ),
+        skating_contact_tilt_full_load_deg=(args.skating_contact_tilt_full_load_deg),
+        skating_contact_tilt_zero_load_deg=(args.skating_contact_tilt_zero_load_deg),
         skating_balance_load_radius_m=args.skating_balance_load_radius_m,
         skating_balance_load_min=args.skating_balance_load_min,
         skating_balance_load_max=args.skating_balance_load_max,
@@ -834,6 +904,22 @@ def cli_main(argv: list[str] | None = None) -> int:
         skating_forward_glide_preserve_min_scale=(
             args.skating_forward_glide_preserve_min_scale
         ),
+        skating_stop_snap_speed_m_s=args.skating_stop_snap_speed_m_s,
+        skating_stop_snap_hold_s=args.skating_stop_snap_hold_s,
+        skating_reorientation_recovery_speed_m_s=(
+            args.skating_reorientation_recovery_speed_m_s
+        ),
+        skating_reorientation_recovery_max_foot_speed_m_s=(
+            args.skating_reorientation_recovery_max_foot_speed_m_s
+        ),
+        skating_reorientation_recovery_perp_scale=(
+            args.skating_reorientation_recovery_perp_scale
+        ),
+        skating_steering_roll_sign=args.skating_steering_roll_sign,
+        skating_steering_roll_deadzone_deg=args.skating_steering_roll_deadzone_deg,
+        skating_steering_roll_full_deg=args.skating_steering_roll_full_deg,
+        skating_steering_min_speed_m_s=args.skating_steering_min_speed_m_s,
+        skating_steering_yaw_rate_deg_s=args.skating_steering_yaw_rate_deg_s,
         verbose=args.verbose,
     )
     return run_session(options)
@@ -1194,6 +1280,32 @@ def _skating_output_frame(
     return standing_hmd_pose, output_yaw_deg
 
 
+def _skating_world_yaw_from_local_yaw(
+    calibrated_yaw_deg: float,
+    local_yaw_deg: float,
+) -> float:
+    return _wrap_angle_deg(calibrated_yaw_deg - local_yaw_deg)
+
+
+def _skating_playspace_yaw_offset_deg(
+    runtime: SteamVROverlayRuntime,
+    model: SkatingCalibrationModel | None,
+    estimate: SkatingEstimate,
+) -> float:
+    if model is None:
+        return 0.0
+
+    baseline_yaw_deg = runtime.raw_yaw_to_standing_yaw(model.yaw_deg)
+    body_world_yaw_deg = _skating_world_yaw_from_local_yaw(
+        model.yaw_deg,
+        estimate.body_yaw_deg,
+    )
+    body_yaw_deg = runtime.raw_yaw_to_standing_yaw(body_world_yaw_deg)
+    if baseline_yaw_deg is None or body_yaw_deg is None:
+        return _wrap_angle_deg(-estimate.body_yaw_deg)
+    return _wrap_angle_deg(body_yaw_deg - baseline_yaw_deg)
+
+
 def _apply_skating_motion(
     osc: VRChatOscController,
     estimate: SkatingEstimate,
@@ -1268,13 +1380,10 @@ def _update_skating_foot_overlays(
     model: SkatingCalibrationModel | None,
     estimate: SkatingEstimate,
     trackers: list[TrackerPose],
+    raw_to_standing: Matrix34Rows | None,
     visible: bool,
 ) -> None:
-    if (
-        not visible
-        or model is None
-        or not config.skating.debug_foot_overlay_enabled
-    ):
+    if not visible or model is None or not config.skating.debug_foot_overlay_enabled:
         _hide_skating_foot_overlays(runtime, overlays)
         return
 
@@ -1293,13 +1402,26 @@ def _update_skating_foot_overlays(
             contact_load=foot_estimate.force_load,
             texture_cache=texture_cache,
         )
+        foot_position = _standing_position_from_raw(
+            tracker.position,
+            raw_to_standing,
+        )
         runtime.update_overlay_placement(
             foot_overlay.overlay,
             OverlayPlacement(
-                x_m=tracker.position[0],
-                y_m=tracker.position[1] + config.skating.debug_foot_overlay_y_offset_m,
-                z_m=tracker.position[2],
-                yaw_deg=model.yaw_deg + foot_estimate.skate_yaw_deg + 90.0,
+                x_m=foot_position[0],
+                y_m=foot_position[1] + config.skating.debug_foot_overlay_y_offset_m,
+                z_m=foot_position[2],
+                yaw_deg=(
+                    _standing_yaw_from_raw_yaw(
+                        _skating_world_yaw_from_local_yaw(
+                            model.yaw_deg,
+                            foot_estimate.skate_yaw_deg,
+                        ),
+                        raw_to_standing,
+                    )
+                    + 90.0
+                ),
                 pitch_deg=-90.0,
             ),
         )
@@ -1401,6 +1523,7 @@ def _update_skating_debug_overlays(
     estimate: SkatingEstimate,
     hmd_pose: HmdPose | None,
     trackers: list[TrackerPose],
+    raw_to_standing: Matrix34Rows | None,
     visible: bool,
 ) -> None:
     if (
@@ -1413,10 +1536,16 @@ def _update_skating_debug_overlays(
         return
 
     _ensure_skating_debug_overlays(runtime, config, overlays, texture_cache)
-    ghost_x_m, ghost_z_m = _skating_debug_ghost_offset(hmd_pose, config)
-    debug_y_m = _skating_debug_floor_y(trackers, config)
-    body_x_m = hmd_pose.position[0] + ghost_x_m
-    body_z_m = hmd_pose.position[2] + ghost_z_m
+    hmd_position = _standing_position_from_raw(hmd_pose.position, raw_to_standing)
+    hmd_direction = _standing_vector_from_raw(hmd_pose.direction, raw_to_standing)
+    standing_tracker_positions = [
+        _standing_position_from_raw(tracker.position, raw_to_standing)
+        for tracker in trackers
+    ]
+    ghost_x_m, ghost_z_m = _skating_debug_ghost_offset(hmd_direction, config)
+    debug_y_m = _skating_debug_floor_y(standing_tracker_positions, config)
+    body_x_m = hmd_position[0] + ghost_x_m
+    body_z_m = hmd_position[2] + ghost_z_m
 
     _place_skating_debug_marker(
         runtime,
@@ -1428,10 +1557,11 @@ def _update_skating_debug_overlays(
         0.16,
     )
 
-    velocity_dx, velocity_dz = _world_vector_from_calibrated(
+    velocity_dx, velocity_dz = _standing_vector_from_calibrated(
         estimate.velocity_right_m_s,
         estimate.velocity_forward_m_s,
         model.yaw_deg,
+        raw_to_standing,
     )
     _place_skating_debug_vector(
         runtime,
@@ -1446,7 +1576,10 @@ def _update_skating_debug_overlays(
         config.skating.debug_velocity_arrow_scale_m,
     )
 
-    body_dx, body_dz = _world_vector_from_yaw(model.yaw_deg + estimate.body_yaw_deg)
+    body_dx, body_dz = _standing_vector_from_raw_yaw(
+        _skating_world_yaw_from_local_yaw(model.yaw_deg, estimate.body_yaw_deg),
+        raw_to_standing,
+    )
     _place_skating_debug_vector(
         runtime,
         config,
@@ -1461,7 +1594,10 @@ def _update_skating_debug_overlays(
         force_visible=True,
     )
 
-    total_torque = sum(foot.torque for foot in estimate.feet.values())
+    steering_turn = estimate.steering_yaw_rate_deg_s / max(
+        1.0,
+        config.skating.steering_yaw_rate_deg_s,
+    )
     _place_skating_debug_torque(
         runtime,
         overlays,
@@ -1469,7 +1605,7 @@ def _update_skating_debug_overlays(
         body_x_m,
         debug_y_m + 0.13,
         body_z_m,
-        total_torque,
+        steering_turn,
     )
 
     trackers_by_serial = {tracker.serial: tracker for tracker in trackers}
@@ -1479,8 +1615,9 @@ def _update_skating_debug_overlays(
             _set_debug_visible(runtime, overlays, f"force_{foot.side}", False)
             _set_debug_visible(runtime, overlays, f"lever_{foot.side}", False)
             continue
-        foot_x_m = tracker.position[0] + ghost_x_m
-        foot_z_m = tracker.position[2] + ghost_z_m
+        foot_position = _standing_position_from_raw(tracker.position, raw_to_standing)
+        foot_x_m = foot_position[0] + ghost_x_m
+        foot_z_m = foot_position[2] + ghost_z_m
         lever_dx = foot_x_m - body_x_m
         lever_dz = foot_z_m - body_z_m
         _place_skating_debug_line(
@@ -1493,10 +1630,11 @@ def _update_skating_debug_overlays(
             lever_dx,
             lever_dz,
         )
-        force_dx, force_dz = _world_vector_from_calibrated(
+        force_dx, force_dz = _standing_vector_from_calibrated(
             foot.force_right_m_s2,
             foot.force_forward_m_s2,
             model.yaw_deg,
+            raw_to_standing,
         )
         _place_skating_debug_vector(
             runtime,
@@ -1701,11 +1839,11 @@ def _set_debug_width(
 
 
 def _skating_debug_ghost_offset(
-    hmd_pose: HmdPose,
+    hmd_direction: tuple[float, float, float],
     config: AppConfig,
 ) -> tuple[float, float]:
-    forward_x = hmd_pose.direction[0]
-    forward_z = hmd_pose.direction[2]
+    forward_x = hmd_direction[0]
+    forward_z = hmd_direction[2]
     magnitude = math.hypot(forward_x, forward_z)
     if magnitude < 0.001:
         return 0.0, -config.skating.debug_ghost_forward_m
@@ -1714,11 +1852,14 @@ def _skating_debug_ghost_offset(
 
 
 def _skating_debug_floor_y(
-    trackers: list[TrackerPose],
+    tracker_positions: list[tuple[float, float, float]],
     config: AppConfig,
 ) -> float:
-    if trackers:
-        return min(tracker.position[1] for tracker in trackers) + config.skating.debug_ghost_y_offset_m
+    if tracker_positions:
+        return (
+            min(position[1] for position in tracker_positions)
+            + config.skating.debug_ghost_y_offset_m
+        )
     return config.skating.debug_ghost_y_offset_m
 
 
@@ -1739,10 +1880,104 @@ def _world_vector_from_yaw(yaw_deg: float) -> tuple[float, float]:
     return -math.sin(yaw_rad), -math.cos(yaw_rad)
 
 
+def _standing_position_from_raw(
+    position: tuple[float, float, float],
+    raw_to_standing: Matrix34Rows | None,
+) -> tuple[float, float, float]:
+    if raw_to_standing is None:
+        return position
+    return (
+        raw_to_standing[0][0] * position[0]
+        + raw_to_standing[0][1] * position[1]
+        + raw_to_standing[0][2] * position[2]
+        + raw_to_standing[0][3],
+        raw_to_standing[1][0] * position[0]
+        + raw_to_standing[1][1] * position[1]
+        + raw_to_standing[1][2] * position[2]
+        + raw_to_standing[1][3],
+        raw_to_standing[2][0] * position[0]
+        + raw_to_standing[2][1] * position[1]
+        + raw_to_standing[2][2] * position[2]
+        + raw_to_standing[2][3],
+    )
+
+
+def _standing_vector_from_raw(
+    vector: tuple[float, float, float],
+    raw_to_standing: Matrix34Rows | None,
+) -> tuple[float, float, float]:
+    if raw_to_standing is None:
+        return vector
+    return (
+        raw_to_standing[0][0] * vector[0]
+        + raw_to_standing[0][1] * vector[1]
+        + raw_to_standing[0][2] * vector[2],
+        raw_to_standing[1][0] * vector[0]
+        + raw_to_standing[1][1] * vector[1]
+        + raw_to_standing[1][2] * vector[2],
+        raw_to_standing[2][0] * vector[0]
+        + raw_to_standing[2][1] * vector[1]
+        + raw_to_standing[2][2] * vector[2],
+    )
+
+
+def _standing_vector_from_raw_xz(
+    dx_m: float,
+    dz_m: float,
+    raw_to_standing: Matrix34Rows | None,
+) -> tuple[float, float]:
+    standing = _standing_vector_from_raw((dx_m, 0.0, dz_m), raw_to_standing)
+    return standing[0], standing[2]
+
+
+def _standing_vector_from_raw_yaw(
+    raw_yaw_deg: float,
+    raw_to_standing: Matrix34Rows | None,
+) -> tuple[float, float]:
+    return _standing_vector_from_raw_xz(
+        *_world_vector_from_yaw(raw_yaw_deg),
+        raw_to_standing,
+    )
+
+
+def _standing_yaw_from_raw_yaw(
+    raw_yaw_deg: float,
+    raw_to_standing: Matrix34Rows | None,
+) -> float:
+    dx_m, dz_m = _standing_vector_from_raw_yaw(raw_yaw_deg, raw_to_standing)
+    return _yaw_from_world_vector(dx_m, dz_m)
+
+
+def _standing_vector_from_calibrated(
+    right: float,
+    forward: float,
+    yaw_deg: float,
+    raw_to_standing: Matrix34Rows | None,
+) -> tuple[float, float]:
+    return _standing_vector_from_raw_xz(
+        *_world_vector_from_calibrated(right, forward, yaw_deg),
+        raw_to_standing,
+    )
+
+
+def _yaw_from_world_vector(dx_m: float, dz_m: float) -> float:
+    if abs(dx_m) < 0.001 and abs(dz_m) < 0.001:
+        return 0.0
+    return math.degrees(math.atan2(-dx_m, -dz_m))
+
+
 def _overlay_yaw_for_world_vector(dx_m: float, dz_m: float) -> float:
     if abs(dx_m) < 0.001 and abs(dz_m) < 0.001:
         return 90.0
-    return math.degrees(math.atan2(-dx_m, -dz_m)) + 90.0
+    return _yaw_from_world_vector(dx_m, dz_m) + 90.0
+
+
+def _wrap_angle_deg(angle_deg: float) -> float:
+    while angle_deg > 180.0:
+        angle_deg -= 360.0
+    while angle_deg <= -180.0:
+        angle_deg += 360.0
+    return angle_deg
 
 
 def _debug_arrow_width(

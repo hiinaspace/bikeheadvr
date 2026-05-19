@@ -94,10 +94,10 @@ class PedalEstimationConfig:
 
 @dataclass(frozen=True)
 class SkatingConfig:
-    debug_foot_overlay_enabled: bool = True
+    debug_foot_overlay_enabled: bool = False
     debug_foot_overlay_length_m: float = 0.34
     debug_foot_overlay_y_offset_m: float = 0.035
-    debug_ghost_overlay_enabled: bool = True
+    debug_ghost_overlay_enabled: bool = False
     debug_ghost_forward_m: float = 1.5
     debug_ghost_y_offset_m: float = 0.08
     debug_force_arrow_scale_m: float = 0.06
@@ -111,7 +111,7 @@ class SkatingConfig:
     contact_tilt_zero_load_deg: float = 35.0
     tracker_velocity_blend: float = 0.0
     max_foot_speed_m_s: float = 10.0
-    push_yaw_gain: float = 2.5
+    push_yaw_gain: float = 1.0
     passive_brake_speed_m_s: float = 0.25
     passive_brake_deadzone_deg: float = 35.0
     passive_brake_full_angle_deg: float = 80.0
@@ -135,11 +135,32 @@ class SkatingConfig:
     forward_glide_preserve_yaw_full_deg: float = 25.0
     forward_glide_preserve_yaw_none_deg: float = 60.0
     forward_glide_preserve_min_scale: float = 0.0
+    stop_snap_speed_m_s: float = 0.08
+    stop_snap_yaw_rate_deg_s: float = 10.0
+    stop_snap_hold_s: float = 0.35
+    reorientation_recovery_enabled: bool = True
+    reorientation_recovery_speed_m_s: float = 0.45
+    reorientation_recovery_mismatch_deg: float = 45.0
+    reorientation_recovery_skate_alignment_deg: float = 35.0
+    reorientation_recovery_contact_load: float = 0.25
+    reorientation_recovery_max_foot_speed_m_s: float = 0.2
+    reorientation_recovery_perp_scale: float = 0.0
+    steering_enabled: bool = True
+    steering_roll_sign: float = -1.0
+    steering_roll_deadzone_deg: float = 5.0
+    steering_roll_full_deg: float = 20.0
+    steering_min_speed_m_s: float = 0.15
+    steering_full_speed_m_s: float = 1.2
+    steering_yaw_rate_deg_s: float = 95.0
+    steering_response_per_s: float = 8.0
+    steering_min_load: float = 0.15
+    steering_landing_grace_s: float = 0.25
+    steering_landing_min_scale: float = 0.0
     longitudinal_drag_per_s: float = 0.18
     lateral_drag_per_s: float = 7.5
     coast_drag_per_s: float = 0.08
     angular_drag_per_s: float = 2.4
-    torque_gain_per_s: float = 4.0
+    torque_gain_per_s: float = 0.0
     max_speed_m_s: float = 3.0
     full_speed_m_s: float = 2.2
     max_yaw_rate_deg_s: float = 180.0

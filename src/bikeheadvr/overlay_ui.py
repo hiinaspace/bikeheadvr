@@ -189,7 +189,9 @@ def build_skate_foot_texture(
         font=font,
         fill=axis,
     )
-    state = f"{int(round(max(0.0, min(1.0, contact_load)) * 100)):02d}" if grounded else "A"
+    state = (
+        f"{int(round(max(0.0, min(1.0, contact_load)) * 100)):02d}" if grounded else "A"
+    )
     state_bbox = draw.textbbox((0, 0), state, font=font)
     draw.text(
         (width_px - (state_bbox[2] - state_bbox[0]) - 24, 16),

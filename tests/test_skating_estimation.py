@@ -12,6 +12,7 @@ from bikeheadvr.skating_estimation import (
     infer_skating_body_position,
     map_local_velocity_to_axes,
     skate_world_yaw_deg,
+    tracker_skate_roll_deg,
     tracker_tilt_deg,
     tracker_yaw_deg,
 )
@@ -104,8 +105,39 @@ def orientation_from_yaw_pitch(
     yaw = orientation_from_yaw(yaw_deg)
     pitch = orientation_from_pitch(pitch_deg)
     return tuple(
-        tuple(sum(yaw[row][idx] * pitch[idx][col] for idx in range(3)) for col in range(3))
+        tuple(
+            sum(yaw[row][idx] * pitch[idx][col] for idx in range(3)) for col in range(3)
+        )
         for row in range(3)
+    )
+
+
+def orientation_from_roll(
+    roll_deg: float,
+) -> tuple[
+    tuple[float, float, float],
+    tuple[float, float, float],
+    tuple[float, float, float],
+]:
+    roll_rad = math.radians(roll_deg)
+    return (
+        (math.cos(roll_rad), math.sin(roll_rad), 0.0),
+        (-math.sin(roll_rad), math.cos(roll_rad), 0.0),
+        (0.0, 0.0, 1.0),
+    )
+
+
+def orientation_from_yaw_roll(
+    yaw_deg: float,
+    roll_deg: float,
+) -> tuple[
+    tuple[float, float, float],
+    tuple[float, float, float],
+    tuple[float, float, float],
+]:
+    return matmul_orientation(
+        orientation_from_yaw(yaw_deg),
+        orientation_from_roll(roll_deg),
     )
 
 
@@ -248,7 +280,9 @@ def calibrated_estimator(
     config: SkatingConfig | None = None,
     feet: list[TrackerPose] | None = None,
 ) -> SkatingEstimator:
-    estimator = SkatingEstimator(TrackerConfig(required_feet_count=2), config or config_for_tests())
+    estimator = SkatingEstimator(
+        TrackerConfig(required_feet_count=2), config or config_for_tests()
+    )
     model = build_skating_calibration(
         0.0,
         0.0,
@@ -268,7 +302,7 @@ def config_for_tests() -> SkatingConfig:
         longitudinal_drag_per_s=0.1,
         lateral_drag_per_s=5.0,
         angular_drag_per_s=0.0,
-        torque_gain_per_s=5.0,
+        torque_gain_per_s=0.0,
         dropout_grace_s=0.2,
         dropout_fall_s=0.5,
     )
@@ -324,7 +358,7 @@ def test_estimate_reports_per_foot_grounding_and_skate_yaw() -> None:
 
     assert estimate.feet["left"].grounded is True
     assert estimate.feet["left"].contact_load == pytest.approx(1.0)
-    assert estimate.feet["left"].skate_yaw_deg == pytest.approx(30.0)
+    assert estimate.feet["left"].skate_yaw_deg == pytest.approx(-30.0)
     assert estimate.feet["right"].grounded is False
     assert estimate.feet["right"].contact_load == pytest.approx(0.0)
 
@@ -369,7 +403,9 @@ def test_skate_yaw_uses_calibrated_foot_axis_when_tracker_is_tilted() -> None:
     )
     old_yaw = tracker_yaw_deg(live_left) - model.feet["left"].yaw_offset_deg
 
-    estimator = SkatingEstimator(TrackerConfig(required_feet_count=2), config_for_tests())
+    estimator = SkatingEstimator(
+        TrackerConfig(required_feet_count=2), config_for_tests()
+    )
     estimator.apply_calibration(model)
     estimate = estimator.update(
         0.2,
@@ -519,6 +555,35 @@ def test_tracker_tilt_ignores_flat_yaw_rotation() -> None:
     assert tilt == pytest.approx(0.0, abs=0.001)
 
 
+def test_skate_roll_extracts_signed_roll_around_wheel_axis() -> None:
+    feet = default_feet()
+    model = build_skating_calibration(0.0, 0.0, 0.0, hmd(), feet, 2)
+    assert model is not None
+    live_left = tracker(
+        "left",
+        -0.2,
+        0.0,
+        0.0,
+        orientation=orientation_from_yaw_roll(0.0, 12.0),
+    )
+    pitched_left = tracker(
+        "left",
+        -0.2,
+        0.0,
+        0.0,
+        orientation=orientation_from_yaw_pitch(0.0, 25.0),
+    )
+
+    assert tracker_skate_roll_deg(live_left, model.feet["left"]) == pytest.approx(
+        12.0,
+        abs=0.001,
+    )
+    assert tracker_skate_roll_deg(pitched_left, model.feet["left"]) == pytest.approx(
+        0.0,
+        abs=0.001,
+    )
+
+
 def test_lifted_foot_motion_applies_no_force() -> None:
     estimator = calibrated_estimator()
     warm_contact(estimator, default_feet())
@@ -581,29 +646,125 @@ def test_yawed_skates_with_right_shifted_com_create_turning_force_and_torque() -
         longitudinal_drag_per_s=0.1,
         lateral_drag_per_s=5.0,
         angular_drag_per_s=0.0,
-        torque_gain_per_s=5.0,
+        torque_gain_per_s=0.0,
         dropout_grace_s=0.2,
         dropout_fall_s=0.5,
         push_yaw_gain=1.0,
         passive_brake_min_scale=1.0,
         landing_brake_min_scale=1.0,
         forward_glide_preserve_enabled=False,
+        steering_enabled=False,
     )
     estimator = calibrated_estimator(config=config)
     warm_contact(estimator, default_feet())
     estimator._state.velocity_forward_m_s = 1.0
 
     turning_feet = [
-        tracker("left", -0.2, 0.0, 0.0, 20.0),
-        tracker("right", 0.2, 0.0, 0.0, 20.0),
+        tracker("left", -0.2, 0.0, 0.0, -20.0),
+        tracker("right", 0.2, 0.0, 0.0, -20.0),
     ]
     estimate = estimator.update(0.2, hmd_at(0.3, 0.0), turning_feet)
 
     assert estimate.velocity_right_m_s > 0.1
     assert estimate.velocity_forward_m_s < 1.0
-    assert estimate.yaw_rate_deg_s < 0.0
-    assert estimate.body_yaw_deg < 0.0
+    assert estimate.yaw_rate_deg_s == pytest.approx(0.0)
+    assert estimate.body_yaw_deg == pytest.approx(0.0)
     assert sum(foot.torque for foot in estimate.feet.values()) < 0.0
+
+
+def test_roll_steering_yaws_body_only_while_moving() -> None:
+    config = SkatingConfig(
+        coast_drag_per_s=0.0,
+        longitudinal_drag_per_s=0.0,
+        lateral_drag_per_s=0.0,
+        angular_drag_per_s=0.0,
+        torque_gain_per_s=0.0,
+        dropout_grace_s=0.2,
+        dropout_fall_s=0.5,
+        steering_roll_deadzone_deg=5.0,
+        steering_roll_full_deg=20.0,
+        steering_min_speed_m_s=0.2,
+        steering_full_speed_m_s=1.0,
+        steering_roll_sign=1.0,
+        steering_yaw_rate_deg_s=100.0,
+        steering_response_per_s=10.0,
+    )
+    stationary = calibrated_estimator(config=config)
+    moving = calibrated_estimator(config=config)
+    warm_contact(stationary, default_feet())
+    warm_contact(moving, default_feet())
+    moving._state.velocity_forward_m_s = 1.0
+    rolled_feet = [
+        tracker(
+            "left",
+            -0.2,
+            0.0,
+            0.0,
+            orientation=orientation_from_yaw_roll(0.0, 20.0),
+        ),
+        tracker(
+            "right",
+            0.2,
+            0.0,
+            0.0,
+            orientation=orientation_from_yaw_roll(0.0, 20.0),
+        ),
+    ]
+
+    stationary_estimate = stationary.update(0.2, hmd(), rolled_feet)
+    moving_estimate = moving.update(0.2, hmd(), rolled_feet)
+
+    assert stationary_estimate.steering_input == pytest.approx(0.0)
+    assert stationary_estimate.yaw_rate_deg_s == pytest.approx(0.0)
+    assert moving_estimate.steering_input > 0.9
+    assert moving_estimate.steering_yaw_rate_deg_s > 90.0
+    assert moving_estimate.yaw_rate_deg_s > 0.0
+    assert moving_estimate.body_yaw_deg > 0.0
+
+
+def test_opposite_roll_steering_cancels_between_grounded_feet() -> None:
+    estimator = calibrated_estimator(
+        config=SkatingConfig(
+            coast_drag_per_s=0.0,
+            longitudinal_drag_per_s=0.0,
+            lateral_drag_per_s=0.0,
+            angular_drag_per_s=0.0,
+            torque_gain_per_s=0.0,
+            dropout_grace_s=0.2,
+            dropout_fall_s=0.5,
+            steering_roll_deadzone_deg=5.0,
+            steering_roll_full_deg=20.0,
+            steering_min_speed_m_s=0.2,
+            steering_full_speed_m_s=1.0,
+            steering_roll_sign=1.0,
+            steering_yaw_rate_deg_s=100.0,
+            steering_response_per_s=10.0,
+        )
+    )
+    warm_contact(estimator, default_feet())
+    estimator._state.velocity_forward_m_s = 1.0
+    rolled_feet = [
+        tracker(
+            "left",
+            -0.2,
+            0.0,
+            0.0,
+            orientation=orientation_from_yaw_roll(0.0, 20.0),
+        ),
+        tracker(
+            "right",
+            0.2,
+            0.0,
+            0.0,
+            orientation=orientation_from_yaw_roll(0.0, -20.0),
+        ),
+    ]
+
+    estimate = estimator.update(0.2, hmd(), rolled_feet)
+
+    assert estimate.steering_input == pytest.approx(0.0)
+    assert estimate.steering_yaw_rate_deg_s == pytest.approx(0.0)
+    assert estimate.yaw_rate_deg_s == pytest.approx(0.0)
 
 
 def test_skating_estimator_is_invariant_to_rigid_world_yaw_and_translation() -> None:
@@ -771,7 +932,9 @@ def test_skating_estimator_is_invariant_to_rigid_world_yaw_and_translation() -> 
         )
 
 
-def test_hitched_tracker_frame_does_not_create_larger_push_than_regular_frames() -> None:
+def test_hitched_tracker_frame_does_not_create_larger_push_than_regular_frames() -> (
+    None
+):
     config = config_for_tests()
     regular = calibrated_estimator(config=config)
     hitched = calibrated_estimator(config=config)
@@ -820,6 +983,284 @@ def test_push_after_physical_turn_uses_fixed_tracking_space() -> None:
     assert estimate.velocity_right_m_s < -0.1
     assert estimate.vertical > 0.0
     assert abs(estimate.horizontal) < 0.05
+
+
+def test_push_after_oblique_physical_turn_uses_current_skate_axis() -> None:
+    estimator = calibrated_estimator()
+    heading_yaw_deg = 45.0
+    turned_feet = [
+        heading_local_tracker("left", -0.2, 0.0, 0.0, heading_yaw_deg, 0.0, 1),
+        heading_local_tracker("right", 0.2, 0.0, 0.0, heading_yaw_deg, 0.0, 2),
+    ]
+    estimator.update(0.0, hmd(heading_yaw_deg), turned_feet)
+    estimator.update(0.1, hmd(heading_yaw_deg), turned_feet)
+
+    pushing = [
+        heading_local_tracker(
+            "left",
+            -0.2,
+            0.0,
+            -0.1,
+            heading_yaw_deg,
+            -90.0,
+            1,
+        ),
+        heading_local_tracker("right", 0.2, 0.2, 0.0, heading_yaw_deg, 0.0, 2),
+    ]
+    estimate = estimator.update(0.2, hmd(heading_yaw_deg), pushing)
+
+    assert estimate.vertical > 0.0
+    assert abs(estimate.horizontal) < 0.05
+    assert estimate.velocity_right_m_s < -0.1
+    assert estimate.velocity_forward_m_s > 0.1
+
+
+def test_aligned_oblique_skates_damp_velocity_perpendicular_to_wheels() -> None:
+    estimator = calibrated_estimator(
+        config=SkatingConfig(
+            coast_drag_per_s=0.0,
+            longitudinal_drag_per_s=0.0,
+            lateral_drag_per_s=5.0,
+            angular_drag_per_s=0.0,
+            torque_gain_per_s=5.0,
+            dropout_grace_s=0.2,
+            dropout_fall_s=0.5,
+            passive_brake_min_scale=1.0,
+            forward_glide_preserve_enabled=False,
+        )
+    )
+    heading_yaw_deg = 45.0
+    turned_feet = [
+        heading_local_tracker("left", -0.2, 0.0, 0.0, heading_yaw_deg, 0.0, 1),
+        heading_local_tracker("right", 0.2, 0.0, 0.0, heading_yaw_deg, 0.0, 2),
+    ]
+    estimator.update(0.0, hmd(heading_yaw_deg), turned_feet)
+    estimator.update(0.1, hmd(heading_yaw_deg), turned_feet)
+    estimator._state.velocity_forward_m_s = 1.0
+
+    estimate = estimator.update(0.2, hmd(heading_yaw_deg), turned_feet)
+
+    assert estimate.velocity_right_m_s < -0.1
+    assert estimate.velocity_forward_m_s < 1.0
+    assert estimate.horizontal < 0.25
+
+
+def test_glide_preserve_follows_velocity_after_physical_turn() -> None:
+    config = SkatingConfig(
+        coast_drag_per_s=0.0,
+        longitudinal_drag_per_s=1.0,
+        lateral_drag_per_s=5.0,
+        angular_drag_per_s=0.0,
+        torque_gain_per_s=5.0,
+        dropout_grace_s=0.2,
+        dropout_fall_s=0.5,
+        forward_glide_preserve_enabled=True,
+        forward_glide_preserve_min_speed_m_s=0.1,
+        forward_glide_preserve_full_speed_m_s=0.5,
+        forward_glide_preserve_min_scale=0.0,
+        passive_brake_min_scale=1.0,
+    )
+    without_preserve = calibrated_estimator(
+        config=replace(config, forward_glide_preserve_enabled=False)
+    )
+    with_preserve = calibrated_estimator(config=config)
+    turned_feet = [
+        heading_local_tracker("left", -0.2, 0.0, 0.0, 90.0, 0.0, 1),
+        heading_local_tracker("right", 0.2, 0.2, 0.0, 90.0, 0.0, 2),
+    ]
+    without_preserve.update(0.0, hmd(90.0), turned_feet)
+    without_preserve.update(0.1, hmd(90.0), turned_feet)
+    with_preserve.update(0.0, hmd(90.0), turned_feet)
+    with_preserve.update(0.1, hmd(90.0), turned_feet)
+    without_preserve._state.velocity_right_m_s = -0.6
+    with_preserve._state.velocity_right_m_s = -0.6
+
+    braking = without_preserve.update(0.2, hmd(90.0), turned_feet)
+    preserved = with_preserve.update(0.2, hmd(90.0), turned_feet)
+
+    assert preserved.feet["left"].glide_preserve_scale < 0.1
+    assert preserved.velocity_right_m_s < braking.velocity_right_m_s
+    assert preserved.vertical > 0.0
+
+
+def test_recovery_relief_follows_velocity_after_physical_turn() -> None:
+    config = SkatingConfig(
+        coast_drag_per_s=0.0,
+        longitudinal_drag_per_s=0.1,
+        lateral_drag_per_s=5.0,
+        angular_drag_per_s=0.0,
+        torque_gain_per_s=5.0,
+        dropout_grace_s=0.2,
+        dropout_fall_s=0.5,
+        recovery_relief_enabled=True,
+        recovery_relief_foot_speed_m_s=0.2,
+        recovery_relief_full_speed_m_s=0.7,
+        recovery_relief_min_scale=0.05,
+        forward_glide_preserve_enabled=False,
+        passive_brake_min_scale=1.0,
+    )
+    without_relief = calibrated_estimator(
+        config=replace(config, recovery_relief_enabled=False)
+    )
+    with_relief = calibrated_estimator(config=config)
+    turned_feet = [
+        heading_local_tracker("left", -0.2, 0.0, 0.0, 90.0, 0.0, 1),
+        heading_local_tracker("right", 0.2, 0.2, 0.0, 90.0, 0.0, 2),
+    ]
+    returning_foot = [
+        heading_local_tracker("left", -0.2, 0.0, 0.1, 90.0, 5.0, 1),
+        heading_local_tracker("right", 0.2, 0.2, 0.0, 90.0, 0.0, 2),
+    ]
+    without_relief.update(0.0, hmd(90.0), turned_feet)
+    without_relief.update(0.1, hmd(90.0), turned_feet)
+    with_relief.update(0.0, hmd(90.0), turned_feet)
+    with_relief.update(0.1, hmd(90.0), turned_feet)
+    without_relief._state.velocity_right_m_s = -0.6
+    with_relief._state.velocity_right_m_s = -0.6
+
+    braking = without_relief.update(0.2, hmd(90.0), returning_foot)
+    relieved = with_relief.update(0.2, hmd(90.0), returning_foot)
+
+    assert relieved.feet["left"].recovery_scale < 0.2
+    assert relieved.velocity_right_m_s < braking.velocity_right_m_s
+    assert relieved.vertical > 0.0
+
+
+def test_low_speed_hold_clears_stale_skating_state() -> None:
+    estimator = calibrated_estimator(
+        config=SkatingConfig(
+            coast_drag_per_s=0.0,
+            longitudinal_drag_per_s=0.0,
+            lateral_drag_per_s=0.0,
+            angular_drag_per_s=0.0,
+            torque_gain_per_s=5.0,
+            dropout_grace_s=0.2,
+            dropout_fall_s=0.5,
+            stop_snap_speed_m_s=0.1,
+            stop_snap_yaw_rate_deg_s=5.0,
+            stop_snap_hold_s=0.2,
+        )
+    )
+    warm_contact(estimator, default_feet())
+    estimator._state.velocity_right_m_s = 0.04
+    estimator._state.velocity_forward_m_s = 0.03
+    estimator._state.body_yaw_deg = 35.0
+    estimator._state.yaw_rate_deg_s = 0.0
+
+    estimator.update(0.2, hmd(), default_feet())
+    estimate = estimator.update(0.5, hmd(), default_feet())
+
+    assert estimate.velocity_right_m_s == pytest.approx(0.0)
+    assert estimate.velocity_forward_m_s == pytest.approx(0.0)
+    assert estimate.body_yaw_deg == pytest.approx(35.0)
+    assert estimate.yaw_rate_deg_s == pytest.approx(0.0)
+    for foot_state in estimator._state.feet.values():
+        assert foot_state.last_world_x_m is None
+        assert foot_state.last_world_z_m is None
+        assert foot_state.last_time_s is None
+
+    moved_feet = [
+        tracker("left", -0.25, 0.0, 0.0),
+        tracker("right", 0.2, 0.0, 0.0),
+    ]
+    estimator.update(0.6, hmd(), moved_feet)
+
+    assert estimator._state.feet["left"].last_world_x_m is not None
+    assert estimator._state.feet["left"].last_world_z_m is not None
+    assert estimator._state.feet["left"].last_time_s is not None
+
+
+def test_low_speed_reorientation_clears_sideways_residual_after_physical_turn() -> None:
+    estimator = calibrated_estimator(
+        config=SkatingConfig(
+            coast_drag_per_s=0.0,
+            longitudinal_drag_per_s=0.0,
+            lateral_drag_per_s=0.0,
+            angular_drag_per_s=0.0,
+            torque_gain_per_s=5.0,
+            dropout_grace_s=0.2,
+            dropout_fall_s=0.5,
+            reorientation_recovery_speed_m_s=0.45,
+            reorientation_recovery_perp_scale=0.0,
+        )
+    )
+    turned_feet = [
+        heading_local_tracker("left", -0.2, 0.0, 0.0, 90.0, 0.0, 1),
+        heading_local_tracker("right", 0.2, 0.0, 0.0, 90.0, 0.0, 2),
+    ]
+    estimator.update(0.0, hmd(90.0), turned_feet)
+    estimator.update(0.1, hmd(90.0), turned_feet)
+    estimator._state.velocity_forward_m_s = 0.3
+    estimator._state.body_yaw_deg = 20.0
+    estimator._state.yaw_rate_deg_s = 0.0
+
+    estimate = estimator.update(0.2, hmd(90.0), turned_feet)
+
+    assert estimate.velocity_right_m_s == pytest.approx(0.0)
+    assert estimate.velocity_forward_m_s == pytest.approx(0.0)
+    assert estimate.body_yaw_deg == pytest.approx(20.0)
+    assert estimate.yaw_rate_deg_s == pytest.approx(0.0)
+    for foot_state in estimator._state.feet.values():
+        assert foot_state.last_world_x_m is None
+        assert foot_state.last_world_z_m is None
+        assert foot_state.last_time_s is None
+
+
+def test_low_speed_reorientation_preserves_velocity_in_new_body_direction() -> None:
+    estimator = calibrated_estimator(
+        config=SkatingConfig(
+            coast_drag_per_s=0.0,
+            longitudinal_drag_per_s=0.0,
+            lateral_drag_per_s=0.0,
+            angular_drag_per_s=0.0,
+            torque_gain_per_s=5.0,
+            dropout_grace_s=0.2,
+            dropout_fall_s=0.5,
+            reorientation_recovery_speed_m_s=0.45,
+            reorientation_recovery_perp_scale=0.0,
+        )
+    )
+    turned_feet = [
+        heading_local_tracker("left", -0.2, 0.0, 0.0, 90.0, 0.0, 1),
+        heading_local_tracker("right", 0.2, 0.0, 0.0, 90.0, 0.0, 2),
+    ]
+    estimator.update(0.0, hmd(90.0), turned_feet)
+    estimator.update(0.1, hmd(90.0), turned_feet)
+    estimator._state.velocity_right_m_s = -0.3
+
+    estimate = estimator.update(0.2, hmd(90.0), turned_feet)
+
+    assert estimate.velocity_right_m_s == pytest.approx(-0.3)
+    assert estimate.velocity_forward_m_s == pytest.approx(0.0)
+    assert estimate.vertical > 0.0
+
+
+def test_low_speed_reorientation_leaves_fast_velocity_alone() -> None:
+    estimator = calibrated_estimator(
+        config=SkatingConfig(
+            coast_drag_per_s=0.0,
+            longitudinal_drag_per_s=0.0,
+            lateral_drag_per_s=0.0,
+            angular_drag_per_s=0.0,
+            torque_gain_per_s=5.0,
+            dropout_grace_s=0.2,
+            dropout_fall_s=0.5,
+            reorientation_recovery_speed_m_s=0.45,
+            reorientation_recovery_perp_scale=0.0,
+        )
+    )
+    turned_feet = [
+        heading_local_tracker("left", -0.2, 0.0, 0.0, 90.0, 0.0, 1),
+        heading_local_tracker("right", 0.2, 0.0, 0.0, 90.0, 0.0, 2),
+    ]
+    estimator.update(0.0, hmd(90.0), turned_feet)
+    estimator.update(0.1, hmd(90.0), turned_feet)
+    estimator._state.velocity_forward_m_s = 0.6
+
+    estimate = estimator.update(0.2, hmd(90.0), turned_feet)
+
+    assert estimate.velocity_right_m_s == pytest.approx(0.0)
+    assert estimate.velocity_forward_m_s == pytest.approx(0.6)
 
 
 def test_looking_down_keeps_last_stable_hmd_yaw_for_output_axes() -> None:
@@ -962,7 +1403,9 @@ def test_small_passive_yaw_error_brakes_less_than_sideways_skate() -> None:
         ],
     )
 
-    assert aligned_estimate.velocity_forward_m_s > sideways_estimate.velocity_forward_m_s
+    assert (
+        aligned_estimate.velocity_forward_m_s > sideways_estimate.velocity_forward_m_s
+    )
 
 
 def test_landing_grace_temporarily_softens_moderate_braking() -> None:
@@ -1119,7 +1562,7 @@ def test_forward_sideways_push_can_drive_reverse() -> None:
     assert estimate.vertical < 0.0
 
 
-def test_front_foot_lateral_force_turns_body_right() -> None:
+def test_front_foot_lateral_force_reports_torque_without_body_yaw() -> None:
     feet = [
         tracker("left", 0.0, 0.0, 0.5, 0.0, 1),
         tracker("right", 0.3, 0.2, 0.0, 0.0, 2),
@@ -1132,8 +1575,9 @@ def test_front_foot_lateral_force_turns_body_right() -> None:
         tracker("right", 0.3, 0.2, 0.0, 0.0, 2),
     ]
     estimate = estimator.update(0.2, hmd(), turning)
-    assert estimate.yaw_rate_deg_s > 0.0
-    assert estimate.body_yaw_deg > 0.0
+    assert estimate.feet["left"].torque > 0.0
+    assert estimate.yaw_rate_deg_s == pytest.approx(0.0)
+    assert estimate.body_yaw_deg == pytest.approx(0.0)
 
 
 def test_head_yaw_compensation_rotates_velocity_to_vrchat_axes() -> None:

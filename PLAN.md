@@ -7,16 +7,11 @@ This file tracks the active prototype work. Stable design notes live in:
 
 ## Current Goal
 
-Collect clean raw-frame skating recordings and use them with synthetic tests to
-debug contact, braking, and turn behavior.
+Keep the skating prototype release-ready while preserving enough diagnostics to
+continue live tuning from the CLI.
 
 ## Active Hypotheses
 
-- Touchdown braking is improved by passive braking slop and landing grace.
-- Remaining sideways-feeling failures are mostly frame/turning issues, not pure
-  push-gain tuning.
-- Chaperone yaw should not be enabled as a default until skating physics reads a
-  frame that is independent of chaperone edits.
 - Raw OpenVR poses from `TrackingUniverseRawAndUncalibrated` are now the source
   of truth for skating physics and recordings.
 - Raw-frame contact Y is probably stable enough to test, but may need a
@@ -27,25 +22,23 @@ debug contact, braking, and turn behavior.
 - The current tuning intentionally preserves forward glide: recovery strokes and
   mostly aligned passive braking are relieved aggressively until we capture
   deliberate braking samples.
-- Live tests suggested foot tilt was corrupting apparent skate yaw. New
-  calibrations now store a tracker-local skate forward axis instead of relying
-  on tracker `-Z` plus a yaw offset.
+- Live tests found and fixed the major frame/yaw issue: new calibrations store a
+  tracker-local skate forward axis, and physics stays in raw tracking space.
+- Roll-based steering feels usable in live testing, but remains opt-in because
+  playspace yaw is more motion-sickness sensitive.
+- Foot and ghost diagnostics are useful for development but should be off by
+  default in the release UI.
 
 ## Near-Term Tasks
 
-1. Record clean single-push and alternating-push samples with raw-frame metadata.
-2. Recalibrate and live-test whether foot overlays keep their yaw when the foot
-   is lifted or tilted.
-3. Live-test the recovery relief and looser passive braking against alternating
-   pushes.
-4. Record deliberate braking samples if stopping becomes too hard.
-5. Replay the new recordings and compare contact load, force, and touchdown
-   braking against expected motion.
-6. Decide whether hip tracker COM should replace HMD XZ for force/torque
-   leverage beyond normal-load estimation.
-7. Use the ghost debug overlays to compare COM, force, torque, and body yaw
-   during live testing.
-8. Re-test chaperone yaw as a presentation transform only.
+1. Live-smoke the desktop app with skating selected, playspace turning off, and
+   diagnostics off by default.
+2. Package a local executable and verify the settings persist through restart.
+3. Keep CLI flags available for record-only runs, diagnostics, and tuning.
+4. Record deliberate braking samples if stopping becomes too hard after release
+   tuning.
+5. Consider a replay-backed fixture from a short clean recording once the data
+   format stabilizes.
 
 ## Regression Tests
 
@@ -78,8 +71,9 @@ The app will append a timestamp. Current recordings are local test artifacts and
 are not committed.
 
 For pure motion-capture samples, add `--skating-record-only`. This keeps
-calibration, estimation, debug overlays, and JSONL recording active, but sends
-no VRChat joystick motion and suppresses chaperone yaw:
+calibration, estimation, and JSONL recording active, but sends no VRChat
+joystick motion and suppresses chaperone yaw. Add `--skating-debug-overlays` if
+the diagnostic visuals are needed during recording:
 
 ```powershell
 uv run bikeheadvr-cli --locomotion-mode skating --skating-record-only --skating-record-path recordings/skate-single-push-left

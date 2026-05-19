@@ -17,6 +17,10 @@ from .overlay_ui import OverlayTexture
 
 LOGGER = logging.getLogger(__name__)
 
+_MAX_PLAYSPACE_BASELINE_TRANSLATION_M = 20.0
+_MAX_PLAYSPACE_TRANSLATION_DELTA_M = 10.0
+_MAX_PLAYSPACE_PIVOT_RADIUS_M = 10.0
+
 
 class RuntimeInitError(RuntimeError):
     """Raised when the OpenVR runtime cannot be initialized."""
@@ -329,10 +333,7 @@ class SteamVROverlayRuntime:
 
         device_poses: list[DevicePose] = []
         for device_index in range(openvr.k_unMaxTrackedDeviceCount):
-            if (
-                device_index == openvr.k_unTrackedDeviceIndex_Hmd
-                and not include_hmd
-            ):
+            if device_index == openvr.k_unTrackedDeviceIndex_Hmd and not include_hmd:
                 continue
             pose = poses[device_index]
             if not pose.bPoseIsValid:
@@ -454,6 +455,9 @@ class SteamVROverlayRuntime:
             if matrix is None:
                 LOGGER.warning("Failed to capture playspace yaw baseline")
                 return False
+            if not _is_safe_playspace_baseline(matrix):
+                LOGGER.warning("Rejected unsafe playspace yaw baseline")
+                return False
             self._playspace_baseline = _copy_hmd_matrix34(matrix)
             self._last_playspace_yaw_deg = 0.0
             self._playspace_yaw_active = False
@@ -469,7 +473,10 @@ class SteamVROverlayRuntime:
     ) -> bool:
         if self._chaperone_setup is None:
             raise RuntimeError("OpenVR chaperone setup API is not initialized")
-        if self._playspace_baseline is None and not self.capture_playspace_yaw_baseline():
+        if (
+            self._playspace_baseline is None
+            and not self.capture_playspace_yaw_baseline()
+        ):
             return False
         if self._playspace_baseline is None:
             return False
@@ -480,6 +487,14 @@ class SteamVROverlayRuntime:
                 math.radians(yaw_deg),
                 pivot_position,
             )
+            if not _is_safe_playspace_matrix(matrix, self._playspace_baseline):
+                LOGGER.warning(
+                    "Rejected unsafe playspace yaw offset yaw=%.2f pivot=%s",
+                    yaw_deg,
+                    pivot_position,
+                )
+                self.restore_playspace_yaw()
+                return False
             self._chaperone_setup.setWorkingStandingZeroPoseToRawTrackingPose(matrix)
             self._chaperone_setup.showWorkingSetPreview()
             self._playspace_yaw_active = True
@@ -488,6 +503,35 @@ class SteamVROverlayRuntime:
         except OpenVRError:
             LOGGER.warning("Failed to apply playspace yaw offset", exc_info=True)
             return False
+
+    def apply_playspace_yaw_offset_from_raw_pivot(
+        self,
+        yaw_deg: float,
+        raw_pivot_position: tuple[float, float, float],
+    ) -> bool:
+        if (
+            self._playspace_baseline is None
+            and not self.capture_playspace_yaw_baseline()
+        ):
+            return False
+        if self._playspace_baseline is None:
+            return False
+        pivot_position = _baseline_standing_position_from_raw(
+            self._playspace_baseline,
+            raw_pivot_position,
+        )
+        if (
+            not _is_finite_vector3(pivot_position)
+            or _vector_magnitude3(pivot_position) > _MAX_PLAYSPACE_PIVOT_RADIUS_M
+        ):
+            LOGGER.warning(
+                "Rejected unsafe playspace raw pivot raw=%s baseline_standing=%s",
+                raw_pivot_position,
+                pivot_position,
+            )
+            self.restore_playspace_yaw()
+            return False
+        return self.apply_playspace_yaw_offset(yaw_deg, pivot_position)
 
     def restore_playspace_yaw(self) -> None:
         if (
@@ -587,10 +631,7 @@ class SteamVROverlayRuntime:
             return f"device_{device_index}"
 
     def _controller_role(self, device_index: int, device_class: int) -> int:
-        if (
-            self._system is None
-            or device_class != openvr.TrackedDeviceClass_Controller
-        ):
+        if self._system is None or device_class != openvr.TrackedDeviceClass_Controller:
             return openvr.TrackedControllerRole_Invalid
         try:
             return self._system.getControllerRoleForTrackedDeviceIndex(device_index)
@@ -692,8 +733,7 @@ def _yaw_matrix_about_pivot(
     pivot_position: tuple[float, float, float],
 ) -> openvr.HmdMatrix34_t:
     baseline_rotation = [
-        [baseline.m[row_idx][col_idx] for col_idx in range(3)]
-        for row_idx in range(3)
+        [baseline.m[row_idx][col_idx] for col_idx in range(3)] for row_idx in range(3)
     ]
     rotation = [
         [math.cos(yaw_rad), 0.0, math.sin(yaw_rad)],
@@ -711,6 +751,64 @@ def _yaw_matrix_about_pivot(
             matrix.m[row_idx][col_idx] = next_rotation[row_idx][col_idx]
         matrix.m[row_idx][3] = next_translation[row_idx]
     return matrix
+
+
+def _baseline_standing_position_from_raw(
+    baseline: openvr.HmdMatrix34_t,
+    raw_position: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    rotation = [
+        [baseline.m[row_idx][col_idx] for col_idx in range(3)] for row_idx in range(3)
+    ]
+    translation = (baseline.m[0][3], baseline.m[1][3], baseline.m[2][3])
+    delta = _sub3(raw_position, translation)
+    return (
+        rotation[0][0] * delta[0]
+        + rotation[1][0] * delta[1]
+        + rotation[2][0] * delta[2],
+        rotation[0][1] * delta[0]
+        + rotation[1][1] * delta[1]
+        + rotation[2][1] * delta[2],
+        rotation[0][2] * delta[0]
+        + rotation[1][2] * delta[1]
+        + rotation[2][2] * delta[2],
+    )
+
+
+def _is_safe_playspace_baseline(matrix: openvr.HmdMatrix34_t) -> bool:
+    return _is_finite_hmd_matrix34(matrix) and (
+        _matrix_translation_magnitude(matrix) <= _MAX_PLAYSPACE_BASELINE_TRANSLATION_M
+    )
+
+
+def _is_safe_playspace_matrix(
+    matrix: openvr.HmdMatrix34_t,
+    baseline: openvr.HmdMatrix34_t,
+) -> bool:
+    if not _is_finite_hmd_matrix34(matrix):
+        return False
+    translation_delta = (
+        matrix.m[0][3] - baseline.m[0][3],
+        matrix.m[1][3] - baseline.m[1][3],
+        matrix.m[2][3] - baseline.m[2][3],
+    )
+    return _vector_magnitude3(translation_delta) <= _MAX_PLAYSPACE_TRANSLATION_DELTA_M
+
+
+def _is_finite_hmd_matrix34(matrix: openvr.HmdMatrix34_t) -> bool:
+    return all(
+        math.isfinite(matrix.m[row_idx][col_idx])
+        for row_idx in range(3)
+        for col_idx in range(4)
+    )
+
+
+def _matrix_translation_magnitude(matrix: openvr.HmdMatrix34_t) -> float:
+    return math.sqrt(
+        matrix.m[0][3] * matrix.m[0][3]
+        + matrix.m[1][3] * matrix.m[1][3]
+        + matrix.m[2][3] * matrix.m[2][3]
+    )
 
 
 def _matvec3(
@@ -738,6 +836,16 @@ def _sub3(
     return (left[0] - right[0], left[1] - right[1], left[2] - right[2])
 
 
+def _is_finite_vector3(vector: tuple[float, float, float]) -> bool:
+    return all(math.isfinite(component) for component in vector)
+
+
+def _vector_magnitude3(vector: tuple[float, float, float]) -> float:
+    return math.sqrt(
+        vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]
+    )
+
+
 def _openvr_package_version() -> str:
     try:
         return importlib.metadata.version("openvr")
@@ -749,7 +857,6 @@ def _log_openvr_diagnostics() -> None:
     LOGGER.info("openvr package version: %s", _openvr_package_version())
 
 
-
 def _log_openvrpaths() -> None:
     vrpath_file = os.path.join(
         os.environ.get("LOCALAPPDATA", ""), "openvr", "openvrpaths.vrpath"
@@ -759,9 +866,14 @@ def _log_openvrpaths() -> None:
             contents = f.read()
         LOGGER.info("openvrpaths.vrpath (%s): %s", vrpath_file, contents.strip())
     except FileNotFoundError:
-        LOGGER.warning("openvrpaths.vrpath not found at %s — OpenVR may not be configured", vrpath_file)
+        LOGGER.warning(
+            "openvrpaths.vrpath not found at %s — OpenVR may not be configured",
+            vrpath_file,
+        )
     except Exception:
-        LOGGER.debug("Could not read openvrpaths.vrpath at %s", vrpath_file, exc_info=True)
+        LOGGER.debug(
+            "Could not read openvrpaths.vrpath at %s", vrpath_file, exc_info=True
+        )
 
 
 def _log_vrclient_dll(runtime_path: str) -> None:

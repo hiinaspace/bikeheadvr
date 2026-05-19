@@ -35,10 +35,13 @@ class SkatingFootEstimate:
     grounded: bool
     contact_load: float
     skate_yaw_deg: float
+    skate_roll_deg: float = 0.0
     balance_load: float = 1.0
     force_load: float = 0.0
     recovery_scale: float = 1.0
     glide_preserve_scale: float = 1.0
+    steering_input: float = 0.0
+    steering_load: float = 0.0
     tilt_deg: float = 0.0
     force_right_m_s2: float = 0.0
     force_forward_m_s2: float = 0.0
@@ -54,6 +57,9 @@ class SkatingEstimate:
     speed_m_s: float = 0.0
     body_yaw_deg: float = 0.0
     yaw_rate_deg_s: float = 0.0
+    steering_roll_deg: float = 0.0
+    steering_input: float = 0.0
+    steering_yaw_rate_deg_s: float = 0.0
     crouch_m: float = 0.0
     trackers_ready: bool = False
     trackers_visible: int = 0
@@ -80,6 +86,10 @@ class _SkatingSimulationState:
     last_update_at: float | None = None
     last_hmd_yaw_deg: float | None = None
     dropout_started_at: float | None = None
+    low_speed_started_at: float | None = None
+    steering_roll_deg: float = 0.0
+    steering_input: float = 0.0
+    steering_yaw_rate_deg_s: float = 0.0
     feet: dict[str, _FootState] = field(default_factory=dict)
     foot_debug: dict[str, SkatingFootEstimate] = field(default_factory=dict)
 
@@ -137,7 +147,9 @@ class SkatingEstimator:
                 grounded_feet=0,
             )
 
-        known_trackers = [tracker for tracker in trackers if tracker.serial in model.feet]
+        known_trackers = [
+            tracker for tracker in trackers if tracker.serial in model.feet
+        ]
         if len(known_trackers) < self._tracker_config.required_feet_count:
             return self._handle_dropout(
                 now,
@@ -177,6 +189,10 @@ class SkatingEstimator:
         accel_forward_m_s2 = 0.0
         torque = 0.0
         grounded_feet = 0
+        max_grounded_foot_speed_m_s = 0.0
+        steering_weight_sum = 0.0
+        steering_input_sum = 0.0
+        steering_roll_sum = 0.0
 
         for tracker in known_trackers:
             foot_model = model.feet[tracker.serial]
@@ -209,8 +225,15 @@ class SkatingEstimator:
                 self._config,
             )
             live_skate_yaw_deg = skate_world_yaw_deg(tracker, foot_model)
-            skate_yaw_deg = _wrap_skate_axis_deg(
-                live_skate_yaw_deg - model.yaw_deg
+            skate_yaw_deg = _world_yaw_to_calibrated_local_yaw(
+                live_skate_yaw_deg,
+                model.yaw_deg,
+            )
+            skate_roll_deg = tracker_skate_roll_deg(
+                tracker,
+                foot_model,
+                model.yaw_deg,
+                current_yaw_deg=live_skate_yaw_deg,
             )
             tilt_deg = tracker_tilt_deg(
                 tracker,
@@ -220,6 +243,13 @@ class SkatingEstimator:
             )
             if foot_state.grounded:
                 grounded_feet += 1
+                max_grounded_foot_speed_m_s = max(
+                    max_grounded_foot_speed_m_s,
+                    math.hypot(
+                        foot_velocity_right_m_s,
+                        foot_velocity_forward_m_s,
+                    ),
+                )
             contact_load = _contact_load(
                 foot_state.grounded,
                 tracker.position[1],
@@ -228,12 +258,16 @@ class SkatingEstimator:
                 self._config,
             )
             balance_load = (
-                balance_loads.get(tracker.serial, 1.0)
-                if foot_state.grounded
-                else 0.0
+                balance_loads.get(tracker.serial, 1.0) if foot_state.grounded else 0.0
             )
             force_load = contact_load * balance_load
             _update_landing_state(foot_state, now, contact_load)
+            steering_load = _steering_load(now, foot_state, force_load, self._config)
+            steering_input = _steering_roll_input(skate_roll_deg, self._config)
+            if steering_load > 0.0:
+                steering_weight_sum += steering_load
+                steering_input_sum += steering_load * steering_input
+                steering_roll_sum += steering_load * skate_roll_deg
             force_right = 0.0
             force_forward = 0.0
             foot_torque = 0.0
@@ -245,8 +279,12 @@ class SkatingEstimator:
                 and force_load > 0.0
                 and delta_s > 0.0
             ):
+                force_skate_yaw_deg = _force_skate_yaw_deg(
+                    skate_yaw_deg,
+                    self._config,
+                )
                 force_right, force_forward = _skate_force(
-                    _force_skate_yaw_deg(skate_yaw_deg, self._config),
+                    force_skate_yaw_deg,
                     self._state.velocity_right_m_s,
                     self._state.velocity_forward_m_s,
                     self._state.yaw_rate_deg_s,
@@ -261,7 +299,7 @@ class SkatingEstimator:
                 brake_scale = _passive_brake_scale(
                     now,
                     foot_state,
-                    _force_skate_yaw_deg(skate_yaw_deg, self._config),
+                    force_skate_yaw_deg,
                     self._state.velocity_right_m_s,
                     self._state.velocity_forward_m_s,
                     force_right,
@@ -271,25 +309,35 @@ class SkatingEstimator:
                 force_right *= brake_scale
                 force_forward *= brake_scale
                 recovery_scale = _recovery_brake_scale(
-                    _force_skate_yaw_deg(skate_yaw_deg, self._config),
+                    force_skate_yaw_deg,
+                    self._state.velocity_right_m_s,
                     self._state.velocity_forward_m_s,
+                    foot_velocity_right_m_s,
                     foot_velocity_forward_m_s,
+                    force_right,
                     force_forward,
                     self._config,
                 )
                 force_right *= recovery_scale
                 force_forward *= recovery_scale
                 glide_preserve_scale = _forward_glide_preserve_scale(
-                    _force_skate_yaw_deg(skate_yaw_deg, self._config),
+                    force_skate_yaw_deg,
+                    self._state.velocity_right_m_s,
                     self._state.velocity_forward_m_s,
+                    force_right,
                     force_forward,
                     self._config,
                 )
-                force_forward *= glide_preserve_scale
-                foot_torque = (
-                    (foot_forward_m - body_forward_m) * force_right
-                    - (foot_right_m - body_right_m) * force_forward
+                force_right, force_forward = _scale_braking_along_velocity(
+                    self._state.velocity_right_m_s,
+                    self._state.velocity_forward_m_s,
+                    force_right,
+                    force_forward,
+                    glide_preserve_scale,
                 )
+                foot_torque = (foot_forward_m - body_forward_m) * force_right - (
+                    foot_right_m - body_right_m
+                ) * force_forward
                 accel_right_m_s2 += force_right
                 accel_forward_m_s2 += force_forward
                 torque += foot_torque
@@ -303,6 +351,9 @@ class SkatingEstimator:
                 recovery_scale=recovery_scale,
                 glide_preserve_scale=glide_preserve_scale,
                 skate_yaw_deg=skate_yaw_deg,
+                skate_roll_deg=skate_roll_deg,
+                steering_input=steering_input,
+                steering_load=steering_load,
                 tilt_deg=tilt_deg,
                 force_right_m_s2=force_right,
                 force_forward_m_s2=force_forward,
@@ -311,10 +362,23 @@ class SkatingEstimator:
 
         self._state.velocity_right_m_s += accel_right_m_s2 * delta_s
         self._state.velocity_forward_m_s += accel_forward_m_s2 * delta_s
+        self._damp_motion(delta_s, force=False)
+        self._clamp_speed()
+        steering_input = (
+            steering_input_sum / steering_weight_sum
+            if steering_weight_sum > 0.0
+            else 0.0
+        )
+        steering_roll_deg = (
+            steering_roll_sum / steering_weight_sum
+            if steering_weight_sum > 0.0
+            else 0.0
+        )
         self._state.yaw_rate_deg_s += (
             self._config.torque_gain_per_s * torque
             - self._config.angular_drag_per_s * self._state.yaw_rate_deg_s
         ) * delta_s
+        self._apply_roll_steering(delta_s, steering_input, steering_roll_deg)
         self._state.yaw_rate_deg_s = _clamp(
             self._state.yaw_rate_deg_s,
             -self._config.max_yaw_rate_deg_s,
@@ -323,8 +387,12 @@ class SkatingEstimator:
         self._state.body_yaw_deg = _wrap_angle_deg(
             self._state.body_yaw_deg + self._state.yaw_rate_deg_s * delta_s
         )
-        self._damp_motion(delta_s, force=False)
-        self._clamp_speed()
+        self._maybe_reorient_low_speed_velocity(
+            hmd_pose,
+            model,
+            max_grounded_foot_speed_m_s,
+        )
+        self._maybe_snap_stopped(now)
 
         return self._estimate(
             hmd_pose=hmd_pose,
@@ -347,9 +415,7 @@ class SkatingEstimator:
     ) -> SkatingEstimate:
         if self._state.dropout_started_at is None:
             self._state.dropout_started_at = now
-        force = (
-            now - self._state.dropout_started_at
-        ) >= self._config.dropout_grace_s
+        force = (now - self._state.dropout_started_at) >= self._config.dropout_grace_s
         self._damp_motion(delta_s, force=force)
         return self._estimate(
             hmd_pose=hmd_pose,
@@ -404,6 +470,9 @@ class SkatingEstimator:
             speed_m_s=speed_m_s,
             body_yaw_deg=self._state.body_yaw_deg,
             yaw_rate_deg_s=self._state.yaw_rate_deg_s,
+            steering_roll_deg=self._state.steering_roll_deg,
+            steering_input=self._state.steering_input,
+            steering_yaw_rate_deg_s=self._state.steering_yaw_rate_deg_s,
             crouch_m=crouch_m,
             trackers_ready=trackers_ready,
             trackers_visible=trackers_visible,
@@ -416,10 +485,7 @@ class SkatingEstimator:
             hmd_pose.direction[0],
             hmd_pose.direction[2],
         )
-        if (
-            horizontal_magnitude < 0.2
-            and self._state.last_hmd_yaw_deg is not None
-        ):
+        if horizontal_magnitude < 0.2 and self._state.last_hmd_yaw_deg is not None:
             return self._state.last_hmd_yaw_deg
         yaw_deg = _yaw_from_direction(hmd_pose.direction)
         self._state.last_hmd_yaw_deg = yaw_deg
@@ -436,6 +502,151 @@ class SkatingEstimator:
         self._state.velocity_forward_m_s *= factor
         yaw_factor = max(0.0, 1.0 - self._config.angular_drag_per_s * delta_s)
         self._state.yaw_rate_deg_s *= yaw_factor
+
+    def _apply_roll_steering(
+        self,
+        delta_s: float,
+        steering_input: float,
+        steering_roll_deg: float,
+    ) -> None:
+        speed_m_s = math.hypot(
+            self._state.velocity_right_m_s,
+            self._state.velocity_forward_m_s,
+        )
+        speed_scale = _axis_input(
+            speed_m_s,
+            self._config.steering_min_speed_m_s,
+            self._config.steering_full_speed_m_s,
+        )
+        if not self._config.steering_enabled or delta_s <= 0.0:
+            speed_scale = 0.0
+            steering_input = 0.0
+            steering_roll_deg = 0.0
+
+        target_yaw_rate_deg_s = (
+            self._config.steering_yaw_rate_deg_s
+            * speed_scale
+            * _clamp(steering_input, -1.0, 1.0)
+        )
+        response = max(0.0, self._config.steering_response_per_s)
+        blend = _clamp(response * delta_s, 0.0, 1.0)
+        self._state.yaw_rate_deg_s += (
+            target_yaw_rate_deg_s - self._state.yaw_rate_deg_s
+        ) * blend
+        self._state.steering_roll_deg = steering_roll_deg
+        self._state.steering_input = steering_input * speed_scale
+        self._state.steering_yaw_rate_deg_s = target_yaw_rate_deg_s
+
+    def _maybe_reorient_low_speed_velocity(
+        self,
+        hmd_pose: HmdPose,
+        model: SkatingCalibrationModel,
+        max_grounded_foot_speed_m_s: float,
+    ) -> None:
+        if not self._config.reorientation_recovery_enabled:
+            return
+        speed_m_s = math.hypot(
+            self._state.velocity_right_m_s,
+            self._state.velocity_forward_m_s,
+        )
+        if (
+            speed_m_s <= self._config.stop_snap_speed_m_s
+            or speed_m_s > self._config.reorientation_recovery_speed_m_s
+            or max_grounded_foot_speed_m_s
+            > self._config.reorientation_recovery_max_foot_speed_m_s
+        ):
+            return
+
+        body_forward = _local_forward_vector_from_world_yaw(
+            self._stable_hmd_yaw_deg(hmd_pose),
+            model.yaw_deg,
+        )
+        body_yaw_deg = math.degrees(math.atan2(body_forward[0], body_forward[1]))
+        velocity_yaw_deg = math.degrees(
+            math.atan2(
+                self._state.velocity_right_m_s,
+                self._state.velocity_forward_m_s,
+            )
+        )
+        if (
+            abs(_wrap_angle_deg(body_yaw_deg - velocity_yaw_deg))
+            < self._config.reorientation_recovery_mismatch_deg
+        ):
+            return
+
+        aligned_feet = [
+            foot
+            for foot in self._state.foot_debug.values()
+            if foot.grounded
+            and foot.contact_load >= self._config.reorientation_recovery_contact_load
+            and abs(_wrap_skate_axis_deg(foot.skate_yaw_deg - body_yaw_deg))
+            <= self._config.reorientation_recovery_skate_alignment_deg
+        ]
+        if len(aligned_feet) < self._tracker_config.required_feet_count:
+            return
+
+        along_body_m_s = (
+            self._state.velocity_right_m_s * body_forward[0]
+            + self._state.velocity_forward_m_s * body_forward[1]
+        )
+        perp_right_m_s = (
+            self._state.velocity_right_m_s - along_body_m_s * body_forward[0]
+        )
+        perp_forward_m_s = (
+            self._state.velocity_forward_m_s - along_body_m_s * body_forward[1]
+        )
+        perp_scale = _clamp(
+            self._config.reorientation_recovery_perp_scale,
+            0.0,
+            1.0,
+        )
+        new_right_m_s = along_body_m_s * body_forward[0] + perp_right_m_s * perp_scale
+        new_forward_m_s = (
+            along_body_m_s * body_forward[1] + perp_forward_m_s * perp_scale
+        )
+        if (
+            abs(new_right_m_s - self._state.velocity_right_m_s) < 0.001
+            and abs(new_forward_m_s - self._state.velocity_forward_m_s) < 0.001
+        ):
+            return
+
+        self._state.velocity_right_m_s = new_right_m_s
+        self._state.velocity_forward_m_s = new_forward_m_s
+        self._state.yaw_rate_deg_s = 0.0
+        self._clear_foot_velocity_history()
+
+    def _maybe_snap_stopped(self, now: float) -> None:
+        speed_m_s = math.hypot(
+            self._state.velocity_right_m_s,
+            self._state.velocity_forward_m_s,
+        )
+        if (
+            self._config.stop_snap_speed_m_s <= 0.0
+            or self._config.stop_snap_hold_s <= 0.0
+            or speed_m_s > self._config.stop_snap_speed_m_s
+            or abs(self._state.yaw_rate_deg_s) > self._config.stop_snap_yaw_rate_deg_s
+        ):
+            self._state.low_speed_started_at = None
+            return
+
+        if self._state.low_speed_started_at is None:
+            self._state.low_speed_started_at = now
+            return
+
+        if now - self._state.low_speed_started_at < self._config.stop_snap_hold_s:
+            return
+
+        self._state.velocity_right_m_s = 0.0
+        self._state.velocity_forward_m_s = 0.0
+        self._state.yaw_rate_deg_s = 0.0
+        self._clear_foot_velocity_history()
+        self._state.low_speed_started_at = now
+
+    def _clear_foot_velocity_history(self) -> None:
+        for foot_state in self._state.feet.values():
+            foot_state.last_world_x_m = None
+            foot_state.last_world_z_m = None
+            foot_state.last_time_s = None
 
     def _clamp_speed(self) -> None:
         speed_m_s = math.hypot(
@@ -555,6 +766,33 @@ def vector_to_calibrated_local(
     return right, forward
 
 
+def _local_forward_vector_from_world_yaw(
+    world_yaw_deg: float,
+    calibrated_yaw_deg: float,
+) -> tuple[float, float]:
+    world_forward = _forward_vector_from_yaw(world_yaw_deg)
+    right_m, forward_m = vector_to_calibrated_local(
+        world_forward[0],
+        world_forward[2],
+        calibrated_yaw_deg,
+    )
+    magnitude = math.hypot(right_m, forward_m)
+    if magnitude <= 0.001:
+        return 0.0, 1.0
+    return right_m / magnitude, forward_m / magnitude
+
+
+def _world_yaw_to_calibrated_local_yaw(
+    world_yaw_deg: float,
+    calibrated_yaw_deg: float,
+) -> float:
+    right_m, forward_m = _local_forward_vector_from_world_yaw(
+        world_yaw_deg,
+        calibrated_yaw_deg,
+    )
+    return _wrap_skate_axis_deg(math.degrees(math.atan2(right_m, forward_m)))
+
+
 def tracker_yaw_deg(tracker: TrackerPose) -> float:
     forward = (
         -tracker.orientation[0][2],
@@ -573,6 +811,30 @@ def skate_world_yaw_deg(
         if math.hypot(forward[0], forward[2]) >= 0.001:
             return _yaw_from_direction(forward)
     return tracker_yaw_deg(tracker) - calibration.yaw_offset_deg
+
+
+def tracker_skate_roll_deg(
+    tracker: TrackerPose,
+    calibration: SkatingFootCalibration,
+    baseline_yaw_deg: float = 0.0,
+    *,
+    current_yaw_deg: float | None = None,
+) -> float:
+    if _vector_magnitude(calibration.baseline_up) <= 0.0:
+        return 0.0
+    forward = _skate_world_forward(tracker, calibration)
+    if _vector_magnitude(forward) <= 0.0:
+        return 0.0
+    live_yaw_deg = (
+        skate_world_yaw_deg(tracker, calibration)
+        if current_yaw_deg is None
+        else current_yaw_deg
+    )
+    expected_up = rotate_world_y(
+        calibration.baseline_up,
+        live_yaw_deg - baseline_yaw_deg,
+    )
+    return _signed_angle_about_axis_deg(expected_up, tracker_up(tracker), forward)
 
 
 def tracker_up(tracker: TrackerPose) -> tuple[float, float, float]:
@@ -596,9 +858,7 @@ def tracker_tilt_deg(
         return 0.0
     current_up = tracker_up(tracker)
     yaw_delta_deg = (
-        tracker_yaw_deg(tracker)
-        if current_yaw_deg is None
-        else current_yaw_deg
+        tracker_yaw_deg(tracker) if current_yaw_deg is None else current_yaw_deg
     ) - baseline_yaw_deg
     baseline = _normalize(rotate_world_y(baseline_up, yaw_delta_deg))
     dot = _clamp(
@@ -659,6 +919,19 @@ def _matvec3(
         sum(matrix[0][idx] * vector[idx] for idx in range(3)),
         sum(matrix[1][idx] * vector[idx] for idx in range(3)),
         sum(matrix[2][idx] * vector[idx] for idx in range(3)),
+    )
+
+
+def _skate_world_forward(
+    tracker: TrackerPose,
+    calibration: SkatingFootCalibration,
+) -> tuple[float, float, float]:
+    if _vector_magnitude(calibration.skate_forward_local) > 0.0:
+        return _normalize(
+            _matvec3(tracker.orientation, calibration.skate_forward_local)
+        )
+    return _forward_vector_from_yaw(
+        tracker_yaw_deg(tracker) - calibration.yaw_offset_deg
     )
 
 
@@ -800,10 +1073,9 @@ def _balance_loads(
     radius_sq_m = max(0.001, config.balance_load_radius_m) ** 2
     weights: dict[str, float] = {}
     for serial, (foot_right_m, foot_forward_m) in foot_positions.items():
-        distance_sq_m = (
-            (foot_right_m - body_right_m) ** 2
-            + (foot_forward_m - body_forward_m) ** 2
-        )
+        distance_sq_m = (foot_right_m - body_right_m) ** 2 + (
+            foot_forward_m - body_forward_m
+        ) ** 2
         weights[serial] = 1.0 / (distance_sq_m + radius_sq_m)
     total_weight = sum(weights.values())
     if total_weight <= 0.0:
@@ -829,6 +1101,37 @@ def _update_landing_state(
     elif foot_state.last_contact_load <= 0.15 < contact_load:
         foot_state.landing_started_at = now
     foot_state.last_contact_load = contact_load
+
+
+def _steering_load(
+    now: float,
+    foot_state: _FootState,
+    force_load: float,
+    config: SkatingConfig,
+) -> float:
+    if force_load < config.steering_min_load:
+        return 0.0
+    landing_scale = 1.0
+    if (
+        foot_state.landing_started_at is not None
+        and config.steering_landing_grace_s > 0.0
+    ):
+        age_s = max(0.0, now - foot_state.landing_started_at)
+        if age_s < config.steering_landing_grace_s:
+            progress = _clamp(age_s / config.steering_landing_grace_s, 0.0, 1.0)
+            landing_scale = config.steering_landing_min_scale + (
+                1.0 - config.steering_landing_min_scale
+            ) * _smoothstep(progress)
+    return force_load * landing_scale
+
+
+def _steering_roll_input(skate_roll_deg: float, config: SkatingConfig) -> float:
+    signed_roll_deg = skate_roll_deg * config.steering_roll_sign
+    return _signed_axis_input(
+        signed_roll_deg,
+        config.steering_roll_deadzone_deg,
+        config.steering_roll_full_deg,
+    )
 
 
 def _skate_force(
@@ -882,10 +1185,16 @@ def _passive_brake_scale(
     speed_m_s = math.hypot(velocity_right_m_s, velocity_forward_m_s)
     if speed_m_s < config.passive_brake_speed_m_s:
         return 1.0
-    if force_right_m_s2 * velocity_right_m_s + force_forward_m_s2 * velocity_forward_m_s >= 0.0:
+    if (
+        force_right_m_s2 * velocity_right_m_s
+        + force_forward_m_s2 * velocity_forward_m_s
+        >= 0.0
+    ):
         return 1.0
 
-    velocity_yaw_deg = math.degrees(math.atan2(velocity_right_m_s, velocity_forward_m_s))
+    velocity_yaw_deg = math.degrees(
+        math.atan2(velocity_right_m_s, velocity_forward_m_s)
+    )
     axis_diff_deg = abs(_wrap_skate_axis_deg(skate_yaw_deg - velocity_yaw_deg))
     scale = _axis_brake_scale(axis_diff_deg, config)
 
@@ -907,34 +1216,48 @@ def _passive_brake_scale(
 
 def _recovery_brake_scale(
     skate_yaw_deg: float,
+    velocity_right_m_s: float,
     velocity_forward_m_s: float,
+    foot_velocity_right_m_s: float,
     foot_velocity_forward_m_s: float,
+    force_right_m_s2: float,
     force_forward_m_s2: float,
     config: SkatingConfig,
 ) -> float:
     if not config.recovery_relief_enabled:
         return 1.0
-    if force_forward_m_s2 >= 0.0:
+    speed_m_s = math.hypot(velocity_right_m_s, velocity_forward_m_s)
+    if speed_m_s <= 0.001:
         return 1.0
-    if velocity_forward_m_s < config.recovery_relief_body_forward_min_m_s:
+    velocity_unit_right = velocity_right_m_s / speed_m_s
+    velocity_unit_forward = velocity_forward_m_s / speed_m_s
+    if (
+        force_right_m_s2 * velocity_unit_right
+        + force_forward_m_s2 * velocity_unit_forward
+        >= 0.0
+    ):
         return 1.0
-    intent_speed_m_s = foot_velocity_forward_m_s
+    intent_speed_m_s = (
+        foot_velocity_right_m_s * velocity_unit_right
+        + foot_velocity_forward_m_s * velocity_unit_forward
+    )
     if intent_speed_m_s <= config.recovery_relief_foot_speed_m_s:
         return 1.0
 
     speed_span = max(
         0.001,
-        config.recovery_relief_full_speed_m_s
-        - config.recovery_relief_foot_speed_m_s,
+        config.recovery_relief_full_speed_m_s - config.recovery_relief_foot_speed_m_s,
     )
     speed_progress = _clamp(
-        (intent_speed_m_s - config.recovery_relief_foot_speed_m_s)
-        / speed_span,
+        (intent_speed_m_s - config.recovery_relief_foot_speed_m_s) / speed_span,
         0.0,
         1.0,
     )
 
-    abs_yaw_deg = abs(_wrap_skate_axis_deg(skate_yaw_deg))
+    velocity_yaw_deg = math.degrees(
+        math.atan2(velocity_right_m_s, velocity_forward_m_s)
+    )
+    abs_yaw_deg = abs(_wrap_skate_axis_deg(skate_yaw_deg - velocity_yaw_deg))
     if abs_yaw_deg >= config.recovery_relief_yaw_none_deg:
         return 1.0
     if abs_yaw_deg <= config.recovery_relief_yaw_full_deg:
@@ -942,8 +1265,7 @@ def _recovery_brake_scale(
     else:
         yaw_span = max(
             0.001,
-            config.recovery_relief_yaw_none_deg
-            - config.recovery_relief_yaw_full_deg,
+            config.recovery_relief_yaw_none_deg - config.recovery_relief_yaw_full_deg,
         )
         yaw_progress = 1.0 - _smoothstep(
             (abs_yaw_deg - config.recovery_relief_yaw_full_deg) / yaw_span
@@ -956,15 +1278,24 @@ def _recovery_brake_scale(
 
 def _forward_glide_preserve_scale(
     skate_yaw_deg: float,
+    velocity_right_m_s: float,
     velocity_forward_m_s: float,
+    force_right_m_s2: float,
     force_forward_m_s2: float,
     config: SkatingConfig,
 ) -> float:
     if not config.forward_glide_preserve_enabled:
         return 1.0
-    if force_forward_m_s2 >= 0.0:
+    speed_m_s = math.hypot(velocity_right_m_s, velocity_forward_m_s)
+    if speed_m_s <= config.forward_glide_preserve_min_speed_m_s:
         return 1.0
-    if velocity_forward_m_s <= config.forward_glide_preserve_min_speed_m_s:
+    velocity_unit_right = velocity_right_m_s / speed_m_s
+    velocity_unit_forward = velocity_forward_m_s / speed_m_s
+    if (
+        force_right_m_s2 * velocity_unit_right
+        + force_forward_m_s2 * velocity_unit_forward
+        >= 0.0
+    ):
         return 1.0
 
     speed_span = max(
@@ -973,13 +1304,15 @@ def _forward_glide_preserve_scale(
         - config.forward_glide_preserve_min_speed_m_s,
     )
     speed_progress = _clamp(
-        (velocity_forward_m_s - config.forward_glide_preserve_min_speed_m_s)
-        / speed_span,
+        (speed_m_s - config.forward_glide_preserve_min_speed_m_s) / speed_span,
         0.0,
         1.0,
     )
 
-    abs_yaw_deg = abs(_wrap_skate_axis_deg(skate_yaw_deg))
+    velocity_yaw_deg = math.degrees(
+        math.atan2(velocity_right_m_s, velocity_forward_m_s)
+    )
+    abs_yaw_deg = abs(_wrap_skate_axis_deg(skate_yaw_deg - velocity_yaw_deg))
     if abs_yaw_deg >= config.forward_glide_preserve_yaw_none_deg:
         return 1.0
     if abs_yaw_deg <= config.forward_glide_preserve_yaw_full_deg:
@@ -999,6 +1332,34 @@ def _forward_glide_preserve_scale(
     return 1.0 - relief * (1.0 - min_scale)
 
 
+def _scale_braking_along_velocity(
+    velocity_right_m_s: float,
+    velocity_forward_m_s: float,
+    force_right_m_s2: float,
+    force_forward_m_s2: float,
+    scale: float,
+) -> tuple[float, float]:
+    scale = _clamp(scale, 0.0, 1.0)
+    if scale >= 1.0:
+        return force_right_m_s2, force_forward_m_s2
+    speed_m_s = math.hypot(velocity_right_m_s, velocity_forward_m_s)
+    if speed_m_s <= 0.001:
+        return force_right_m_s2, force_forward_m_s2
+    velocity_unit_right = velocity_right_m_s / speed_m_s
+    velocity_unit_forward = velocity_forward_m_s / speed_m_s
+    force_along_velocity = (
+        force_right_m_s2 * velocity_unit_right
+        + force_forward_m_s2 * velocity_unit_forward
+    )
+    if force_along_velocity >= 0.0:
+        return force_right_m_s2, force_forward_m_s2
+    reduction = force_along_velocity * (1.0 - scale)
+    return (
+        force_right_m_s2 - reduction * velocity_unit_right,
+        force_forward_m_s2 - reduction * velocity_unit_forward,
+    )
+
+
 def _axis_brake_scale(axis_diff_deg: float, config: SkatingConfig) -> float:
     minimum = _clamp(config.passive_brake_min_scale, 0.0, 1.0)
     if axis_diff_deg <= config.passive_brake_deadzone_deg:
@@ -1013,6 +1374,23 @@ def _axis_brake_scale(axis_diff_deg: float, config: SkatingConfig) -> float:
         1.0,
     )
     return minimum + (1.0 - minimum) * _smoothstep(progress)
+
+
+def _signed_axis_input(value: float, deadzone: float, full_scale: float) -> float:
+    magnitude = abs(value)
+    if magnitude <= deadzone:
+        return 0.0
+    return math.copysign(
+        _axis_input(magnitude, deadzone, full_scale),
+        value,
+    )
+
+
+def _axis_input(value: float, deadzone: float, full_scale: float) -> float:
+    if value <= deadzone:
+        return 0.0
+    span = max(0.001, full_scale - deadzone)
+    return _clamp((value - deadzone) / span, 0.0, 1.0)
 
 
 def _force_skate_yaw_deg(skate_yaw_deg: float, config: SkatingConfig) -> float:
@@ -1058,6 +1436,51 @@ def _normalize(vector: tuple[float, float, float]) -> tuple[float, float, float]
 
 def _vector_magnitude(vector: tuple[float, float, float]) -> float:
     return math.sqrt(sum(component * component for component in vector))
+
+
+def _project_onto_plane(
+    vector: tuple[float, float, float],
+    normal: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    normalized_normal = _normalize(normal)
+    dot = _dot3(vector, normalized_normal)
+    return (
+        vector[0] - dot * normalized_normal[0],
+        vector[1] - dot * normalized_normal[1],
+        vector[2] - dot * normalized_normal[2],
+    )
+
+
+def _signed_angle_about_axis_deg(
+    start: tuple[float, float, float],
+    end: tuple[float, float, float],
+    axis: tuple[float, float, float],
+) -> float:
+    normalized_axis = _normalize(axis)
+    start_on_plane = _normalize(_project_onto_plane(start, normalized_axis))
+    end_on_plane = _normalize(_project_onto_plane(end, normalized_axis))
+    cross = _cross3(start_on_plane, end_on_plane)
+    sin_angle = _dot3(cross, normalized_axis)
+    cos_angle = _clamp(_dot3(start_on_plane, end_on_plane), -1.0, 1.0)
+    return math.degrees(math.atan2(sin_angle, cos_angle))
+
+
+def _dot3(
+    left: tuple[float, float, float],
+    right: tuple[float, float, float],
+) -> float:
+    return left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
+
+
+def _cross3(
+    left: tuple[float, float, float],
+    right: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    return (
+        left[1] * right[2] - left[2] * right[1],
+        left[2] * right[0] - left[0] * right[2],
+        left[0] * right[1] - left[1] * right[0],
+    )
 
 
 def _clamp(value: float, minimum: float, maximum: float) -> float:
